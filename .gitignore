@@ -1,0 +1,31 @@
+.venv/
+.state/
+exports/
+reports/
+imports/
+outputs/
+logs/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local configuration and credentials
+/config.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local development output
+.coverage
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.idea/
+.vscode/
+build/
+dist/
+*.egg-info/

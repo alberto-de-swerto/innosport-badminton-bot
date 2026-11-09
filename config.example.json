@@ -1,0 +1,17 @@
+{
+  "timezone": "Europe/Moscow",
+  "title_pattern": "badminton.*beginners|бадминтон.*начина",
+  "group_ids": [],
+  "lead_minutes": 60,
+  "max_lateness_seconds": 120,
+  "request_timeout_seconds": 20,
+  "poll_seconds": 10,
+  "vpn_control": {
+    "enabled": false
+  },
+  "schedule": [
+    {"weekday": 3, "time": "20:00"},
+    {"weekday": 5, "time": "18:30"},
+    {"weekday": 6, "time": "18:00"}
+  ]
+}
