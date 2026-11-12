@@ -73,6 +73,59 @@ class RegistryTests(TemporaryProject):
         self.assertIn("Удалено", self.registry.dismiss(current["student_id"], current["revision"]))
         self.assertIn("уже удалена", self.registry.dismiss(current["student_id"], current["revision"]))
 
+    def test_decrement_forgives_oldest_case_then_removes_person_at_zero(self):
+        self.registry.record(report())
+        later = report(102, START + timedelta(days=2))
+        self.registry.record(later)
+        old = self.registry.rows()[0]
+        self.assertIn("2 → 1", self.registry.decrement(old["student_id"], old["revision"]))
+        row = self.registry.rows()[0]
+        self.assertEqual(row["count"], 1)
+        self.assertEqual(row["incidents"][0]["training_start"], later["training_start"])
+        self.assertIn("изменился", self.registry.decrement(old["student_id"], old["revision"]))
+        self.assertIn("Счётчик: 0", self.registry.decrement(row["student_id"], row["revision"]))
+        self.assertEqual(self.registry.rows(), [])
+        self.registry.record(report(checked=START + timedelta(days=4)))
+        self.registry.record(dict(later, checked_at=(START + timedelta(days=4)).isoformat()))
+        self.assertEqual(ViolationRegistry(self.config).rows(), [])
+
+    def test_explicit_import_confirmation_counts_only_selected_person_and_keeps_source(self):
+        imported = dict(report(cancelled=PEOPLE), baseline_mode="user_import")
+        write_json(self.root / "reports" / "imported" / "report.json", imported)
+        self.registry.sync_history()
+        self.assertEqual(self.registry.rows(), [])
+        self.registry.confirm_import(imported, PEOPLE[1]["student_id"])
+        self.registry.confirm_import(imported, PEOPLE[1]["student_id"])
+        self.registry.record(report(102, START + timedelta(days=2)))
+        restarted = ViolationRegistry(self.config)
+        restarted.sync_history()
+        rows = restarted.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["count"], 2)
+        self.assertEqual(rows[0]["incidents"][-1]["source"], "confirmed_import")
+        restarted.decrement(rows[0]["student_id"], rows[0]["revision"])
+        restarted.confirm_import(imported, PEOPLE[1]["student_id"])
+        restarted.sync_history()
+        self.assertEqual(restarted.rows()[0]["count"], 1)
+        self.assertEqual(restarted.load()["confirmed_cases"], {})
+
+    def test_import_confirmation_rejects_unrelated_person_preliminary_and_scheduled_reports(self):
+        for data, ident in ((report(), 2), (dict(report(), baseline_mode="user_import"), 1),
+                            (dict(report(), baseline_mode="user_import", preliminary=True), 2)):
+            with self.subTest(data=data, ident=ident), self.assertRaises(DataError):
+                self.registry.confirm_import(data, ident)
+        self.assertEqual(self.registry.rows(), [])
+
+    def test_old_state_loads_with_empty_confirmations_without_losing_cases(self):
+        self.registry.record(report())
+        state = self.registry.load()
+        del state["confirmed_cases"]
+        write_json(self.registry.path, state)
+        self.assertEqual(self.registry.rows()[0]["count"], 1)
+        self.registry.record(report(102, START + timedelta(days=2)))
+        self.assertEqual(self.registry.load()["confirmed_cases"], {})
+        self.assertEqual(self.registry.rows()[0]["count"], 2)
+
     def test_backfill_uses_latest_report_and_excludes_tests_and_preliminary_results(self):
         old = report()
         latest = report(cancelled=[], checked=START + timedelta(hours=4))

@@ -75,11 +75,15 @@ such input must be transcribed and identities verified separately.
 Cases are keyed by group, session, and student ID. The latest comparison replaces
 the session's cases, so repeated checks do not increase counts and corrected
 attendance removes outdated cases. Existing final reports are backfilled on
-`/violations`; preliminary and user-imported reports are excluded.
+`/violations`; preliminary and user-imported reports are excluded from automatic
+counting. Individual imported cases require explicit owner confirmation through
+`confirm_import`; their origin and confirmation time are preserved separately.
 
-The register uses a separate file lock and atomic JSON writes. Removing a person
-dismisses their current cases and retains identifier-only tombstones, preventing
-rechecks or backfills from resurrecting them. New sessions remain eligible.
+The register uses a separate file lock and atomic JSON writes. The −1 button
+dismisses the oldest active case; a zero counter removes the person from the view.
+Removing a person dismisses all their current cases. Identifier-only tombstones
+prevent rechecks or backfills from resurrecting forgiven cases. New sessions
+remain eligible.
 Neither dismissal nor backfill modifies snapshots, source reports, or the site.
 
 The comparison cannot reconstruct a cancellation timeline, identify who removed

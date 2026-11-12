@@ -113,7 +113,7 @@ The example uses `Europe/Moscow` and a 60-minute lead time. All entries are conf
 | --- | --- |
 | `/check` | Compare the most recent session that has started |
 | `/check YYYY-MM-DD` | Compare a specific session |
-| `/violations` | Show possible late cancellations, counts, dates, and removal buttons |
+| `/violations` | Show possible late cancellations, counters, dates, −1 and removal buttons |
 | `/status` | Show recent snapshot jobs and the next scheduled capture |
 | `/help` | Show usage instructions |
 
@@ -123,14 +123,19 @@ After a completed session, `/check` updates a private local register of people w
 were in the scheduled snapshot but disappeared without receiving hours. Open
 `/violations` to see names, counts, and dates; use the arrow buttons to change pages.
 Existing saved final reports are included automatically. Preliminary comparisons
-and historical tests based on screenshots are excluded.
+and historical tests based on screenshots are excluded from automatic counting.
+An individual screenshot case can be explicitly confirmed by the owner; its date
+then carries a `*` marker so its source stays visible.
 
 Each person counts once per session. A later `/check` replaces that session's
-result, so correcting attendance removes an outdated case. The 🗑 button clears
-all currently listed cases for that person. Rechecking or restarting will not
-restore those cases; a cancellation at a new session can add the person again.
-An old button cannot clear cases added since it was displayed: the bot refreshes
-the list and asks you to use the updated button.
+result, so correcting attendance removes an outdated case. Use **−1** beside a
+person to forgive their oldest case and reduce their counter by one. At zero the
+person disappears from the list automatically. The 🗑 button clears all currently
+listed cases for that person. Rechecking or restarting will not restore forgiven
+cases, including manually confirmed screenshot cases; a cancellation at a new
+session can add the person again. An old button cannot reduce a counter that has
+changed since it was displayed: the bot refreshes the list and asks you to use the
+updated button.
 
 The register is stored in `.state/violations.json` with a file lock and atomic
 writes. It is excluded from Git. Removing a register entry does not change the

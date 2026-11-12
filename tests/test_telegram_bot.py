@@ -142,16 +142,17 @@ class ViolationCommandTests(TemporaryProject):
         sportsite.write_json(self.root / "reports" / "example" / "report.json", report())
         api = self.handle(update(text="/violations"))
         self.assertIn("05.11.2026", api.send.call_args.args[1])
-        self.assertIn("Поздних отмен: 1", api.send.call_args.args[1])
+        self.assertIn("Счётчик: 1", api.send.call_args.args[1])
         markup = api.send.call_args.kwargs["reply_markup"]
-        self.assertIn("Удалить", markup["inline_keyboard"][0][0]["text"])
+        self.assertIn("−1", markup["inline_keyboard"][0][0]["text"])
+        self.assertIn("Удалить", markup["inline_keyboard"][0][1]["text"])
         self.assertLessEqual(len(markup["inline_keyboard"][0][0]["callback_data"].encode()), 64)
 
     def test_owner_can_delete_in_bot_and_replayed_click_is_idempotent(self):
         registry = ViolationRegistry(self.config)
         registry.record(report())
         _, markup = bot.violations_page(self.config, registry.rows())
-        value = self.callback(markup["inline_keyboard"][0][0]["callback_data"])
+        value = self.callback(markup["inline_keyboard"][0][1]["callback_data"])
         api = self.handle(value)
         self.assertEqual(api.call.call_args_list[0].args[0], "answerCallbackQuery")
         self.assertEqual(api.call.call_args_list[-1].args[0], "editMessageText")
@@ -159,6 +160,28 @@ class ViolationCommandTests(TemporaryProject):
         self.assertEqual(registry.rows(), [])
         self.handle(value)
         self.assertEqual(registry.rows(), [])
+
+    def test_decrement_button_reduces_counter_by_one_then_hides_zero_count_person(self):
+        registry = ViolationRegistry(self.config)
+        registry.record(report())
+        registry.record(report(training_id=102))
+        _, markup = bot.violations_page(self.config, registry.rows())
+        value = self.callback(markup["inline_keyboard"][0][0]["callback_data"])
+        api = self.handle(value)
+        self.assertIn("2 → 1", api.call.call_args.args[1]["text"])
+        self.assertEqual(registry.rows()[0]["count"], 1)
+        _, markup = bot.violations_page(self.config, registry.rows())
+        api = self.handle(self.callback(markup["inline_keyboard"][0][0]["callback_data"]))
+        self.assertIn("Счётчик: 0", api.call.call_args.args[1]["text"])
+        self.assertIn("Список пуст", api.call.call_args.args[1]["text"])
+        self.assertEqual(registry.rows(), [])
+
+    def test_confirmed_import_date_has_visible_source_marker(self):
+        registry = ViolationRegistry(self.config)
+        registry.confirm_import(dict(report(), baseline_mode="user_import"), 2)
+        api = self.handle(update(text="/violations"))
+        self.assertIn("05.11.2026*", api.send.call_args.args[1])
+        self.assertIn("подтверждённый вручную", api.send.call_args.args[1])
 
     def test_other_users_groups_spoofed_sender_and_malformed_callbacks_cannot_delete(self):
         registry = ViolationRegistry(self.config)

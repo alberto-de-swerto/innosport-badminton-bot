@@ -36,7 +36,7 @@ BOT_COMMANDS = [
 HELP = ("🏸 Бадминтон · Beginners\n\n"
         "/check — сравнить последнее начавшееся занятие\n"
         "/check YYYY-MM-DD — сравнить занятие за указанную дату\n"
-        "/violations — журнал поздних отмен и кнопки удаления\n"
+        "/violations — счётчики поздних отмен, −1 и удаление\n"
         "/status — состояние снимков и ближайшая выгрузка\n"
         "/help — эта справка\n\n"
         "После успешной плановой выгрузки автоматически приходит список записавшихся.\n\n"
@@ -375,11 +375,14 @@ def violations_page(config, rows, page=0, notice=None):
     for index, person in enumerate(rows[page * page_size:(page + 1) * page_size], page * page_size + 1):
         name = display_name(person)[:120]
         dates = [parse_datetime(item["training_start"]).astimezone(config.timezone).strftime("%d.%m.%Y")
+                 + ("*" if item.get("source") == "confirmed_import" else "")
                  for item in person["incidents"][:4]]
         suffix = " · ещё %s" % (person["count"] - 4) if person["count"] > 4 else ""
         lines.extend(["", "%s. %s" % (index, name),
-                      "Поздних отмен: %s · %s%s" % (person["count"], ", ".join(dates), suffix)])
-        keyboard.append([{"text": "🗑 Удалить: " + name[:48],
+                      "Счётчик: %s · %s%s" % (person["count"], ", ".join(dates), suffix)])
+        keyboard.append([{"text": "−1 · " + name[:32],
+                          "callback_data": "vr:dec:%s:%s:%s" % (person["student_id"], person["revision"], page)},
+                         {"text": "🗑 Удалить все",
                           "callback_data": "vr:del:%s:%s:%s" % (person["student_id"], person["revision"], page)}])
     if not rows:
         lines.extend(["", "Список пуст. Записи добавляются после /check по завершённым занятиям."])
@@ -392,9 +395,10 @@ def violations_page(config, rows, page=0, notice=None):
         keyboard.append(navigation)
     lines.extend(["", "Это возможные поздние отмены: были в снимке, затем исчезли без часов. "
                   "Кто отменил запись, сайт не сообщает.",
-                  "Кнопка удаляет все текущие случаи участника из журнала. "
-                  "Повторный /check их не вернёт; новые отмены учитываются.",
-                  "Тесты со скриншотами и предварительные проверки не учитываются."])
+                  "«−1» списывает самый ранний случай. При 0 участник исчезает из списка. "
+                  "«🗑 Удалить все» обнуляет счётчик. Повторный /check не вернёт списанное; новые отмены учитываются.",
+                  "* — случай со скриншотов, подтверждённый вручную. "
+                  "Остальные тесты и предварительные проверки не учитываются."])
     return "\n".join(lines), {"inline_keyboard": keyboard}
 
 
@@ -419,17 +423,18 @@ def handle_callback(config, settings, api, callback):
             or not isinstance(callback.get("id"), str)):
         return
     data = callback.get("data", "")
-    match = re.fullmatch(r"vr:(?:page:([0-9]{1,6})|del:([1-9][0-9]{0,18}):([0-9a-f]{16}):([0-9]{1,6}))", data) if isinstance(data, str) else None
+    match = re.fullmatch(r"vr:(?:page:(?P<page>[0-9]{1,6})|(?P<action>del|dec):(?P<student>[1-9][0-9]{0,18}):(?P<revision>[0-9a-f]{16}):(?P<return_page>[0-9]{1,6}))", data) if isinstance(data, str) else None
     api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
     if match is None:
         return
     try:
         notice = None
-        if match[2]:
+        if match["student"]:
             registry = ViolationRegistry(config)
             registry.sync_history()
-            notice = registry.dismiss(int(match[2]), match[3])
-        show_violations(config, settings, api, int(match[1] or match[4]), message=message, notice=notice)
+            operation = registry.decrement if match["action"] == "dec" else registry.dismiss
+            notice = operation(int(match["student"]), match["revision"])
+        show_violations(config, settings, api, int(match["page"] or match["return_page"]), message=message, notice=notice)
     except (SportError, OSError) as exc:
         detail = str(exc) if isinstance(exc, SportError) else "Не удалось сохранить журнал поздних отмен."
         api.send(settings["chat_id"], "⚠️ " + detail)

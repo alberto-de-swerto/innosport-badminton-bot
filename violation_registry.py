@@ -37,12 +37,13 @@ def validate_session(session):
         ids.add(ident)
 
 
-def report_session(report):
-    """Only completed comparisons of scheduled snapshots count, never screenshot tests."""
-    if report.get("baseline_mode") == "user_import" or report.get("preliminary") is True:
+def report_session(report, allow_import=False):
+    """Imported reports require explicit approval of an individual case."""
+    if (report.get("baseline_mode") == "user_import" and not allow_import) or report.get("preliminary") is True:
         return None
     try:
-        if (report["schema_version"] != 1 or report["baseline_mode"] != "scheduled"
+        modes = ("scheduled", "user_import") if allow_import else ("scheduled",)
+        if (report["schema_version"] != 1 or report["baseline_mode"] not in modes
                 or report["preliminary"] is not False
                 or not parse_datetime(report["training_start"]) < parse_datetime(report["training_end"])
                 <= parse_datetime(report["checked_at"])):
@@ -84,9 +85,19 @@ class ViolationRegistry:
                 validate_session(session)
                 if key != session_key(session):
                     raise ValueError()
+            # Additive migration of existing registers; automatic imports remain disabled.
+            state.setdefault("confirmed_cases", {})
+            if not isinstance(state["confirmed_cases"], dict):
+                raise ValueError()
+            for key, case in state["confirmed_cases"].items():
+                validate_session(dict(case, cancelled=[case["person"]]))
+                parse_datetime(case["confirmed_at"])
+                if (case["source"] != "confirmed_import"
+                        or key != incident_key(case, case["person"]["student_id"])):
+                    raise ValueError()
             return state
         except FileNotFoundError:
-            return {"schema_version": 1, "sessions": {}, "dismissed": []}
+            return {"schema_version": 1, "sessions": {}, "dismissed": [], "confirmed_cases": {}}
         except (OSError, ValueError, KeyError, TypeError, AttributeError, DataError):
             raise DataError("Не удалось прочитать журнал поздних отмен. Данные не перезаписаны.") from None
 
@@ -111,6 +122,26 @@ class ViolationRegistry:
             if self.merge(state, session):
                 write_json(self.path, state)
 
+    def confirm_import(self, report, student_id):
+        """Approve one known screenshot case without relabelling its source as automatic."""
+        positive_id(student_id)
+        session = report_session(report, allow_import=True)
+        if report.get("baseline_mode") != "user_import" or session is None:
+            raise DataError("Для ручного подтверждения нужен итоговый отчёт по внесённому списку.")
+        person = next((p for p in session["cancelled"] if p["student_id"] == student_id), None)
+        if person is None:
+            raise DataError("Этот участник не входит в список возможных отмен выбранного отчёта.")
+        key = incident_key(session, student_id)
+        with self.locked():
+            state = self.load()
+            if key in state["confirmed_cases"] or key in state["dismissed"]:
+                return
+            case = {field: session[field] for field in
+                    ("training_id", "group_id", "training_start", "checked_at")}
+            state["confirmed_cases"][key] = dict(case, person=person, source="confirmed_import",
+                                                confirmed_at=self.config.now().isoformat())
+            write_json(self.path, state)
+
     def sync_history(self):
         """Backfill old final reports; latest comparison wins and dismissals stay dismissed."""
         sessions = []
@@ -133,14 +164,22 @@ class ViolationRegistry:
     def people(state):
         people = {}
         dismissed = set(state["dismissed"])
+        seen = set()
+
+        def add(session, person, source):
+            key = incident_key(session, person["student_id"])
+            if key in dismissed or key in seen:
+                return
+            seen.add(key)
+            entry = people.setdefault(person["student_id"], dict(person, incidents=[]))
+            entry["full_name"] = person["full_name"]
+            entry["incidents"].append({"key": key, "training_start": session["training_start"], "source": source})
+
         for session in sorted(state["sessions"].values(), key=lambda s: parse_datetime(s["checked_at"])):
             for person in session["cancelled"]:
-                key = incident_key(session, person["student_id"])
-                if key in dismissed:
-                    continue
-                entry = people.setdefault(person["student_id"], dict(person, incidents=[]))
-                entry["full_name"] = person["full_name"]
-                entry["incidents"].append({"key": key, "training_start": session["training_start"]})
+                add(session, person, "scheduled")
+        for case in state.get("confirmed_cases", {}).values():
+            add(case, case["person"], case["source"])
         for entry in people.values():
             entry["incidents"].sort(key=lambda incident: parse_datetime(incident["training_start"]), reverse=True)
             entry["count"] = len(entry["incidents"])
@@ -154,6 +193,13 @@ class ViolationRegistry:
 
     def dismiss(self, student_id, revision):
         """Forgive current incidents only; a stale button cannot erase new incidents."""
+        return self.reduce(student_id, revision, clear=True)
+
+    def decrement(self, student_id, revision):
+        """Forgive the oldest current case; zero-count people are omitted automatically."""
+        return self.reduce(student_id, revision, clear=False)
+
+    def reduce(self, student_id, revision, clear):
         positive_id(student_id)
         with self.locked():
             state = self.load()
@@ -162,10 +208,18 @@ class ViolationRegistry:
                 return "Запись уже удалена."
             if person["revision"] != revision:
                 return "Список изменился. Проверь новые записи и нажми кнопку ещё раз."
-            dismissed = set(state["dismissed"])
-            dismissed.update(incident["key"] for incident in person["incidents"])
+            incidents = person["incidents"] if clear else person["incidents"][-1:]
+            keys = {incident["key"] for incident in incidents}
+            dismissed = set(state["dismissed"]) | keys
             state["dismissed"] = sorted(dismissed)
             for session in state["sessions"].values():
-                session["cancelled"] = [p for p in session["cancelled"] if p["student_id"] != student_id]
+                session["cancelled"] = [p for p in session["cancelled"] if incident_key(session, p["student_id"]) not in keys]
+            for key in keys:
+                state["confirmed_cases"].pop(key, None)
             write_json(self.path, state)
-            return "Удалено из журнала: %s. Новые отмены будут учитываться." % person["count"]
+            remaining = person["count"] - len(incidents)
+            if clear:
+                return "Удалено из журнала: %s. Новые отмены будут учитываться." % person["count"]
+            if not remaining:
+                return "Счётчик: 0. Участник убран из списка."
+            return "Счётчик: %s → %s. Списан самый ранний случай." % (person["count"], remaining)

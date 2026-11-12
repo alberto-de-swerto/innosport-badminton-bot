@@ -31,6 +31,9 @@ comparison timestamps. Dismissed cases retain only session/student identifiers
 to prevent a repeated comparison from restoring them; source reports and
 snapshots remain unchanged. Register pages and removal buttons are available
 only to the paired owner in their private Telegram chat.
+Explicitly confirmed screenshot cases also retain their import source and the
+confirmation time. They are not presented as automatic snapshots. Decreasing a
+counter forgives one case and uses the same durable dismissal mechanism.
 Telegram receives names, credited hours where relevant, and session information.
 Use the tool only with appropriate account access and inform participants about
 the club's handling of attendance data.
