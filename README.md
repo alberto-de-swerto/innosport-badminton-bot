@@ -14,6 +14,7 @@ Built around a real coordination problem at [Innopolis University](https://sport
 - **Automatic Telegram notifications** after a successful scheduled export, including every registered participant's name.
 - **Attendance comparisons** through `/check`, after the leader saves attendance hours on the website.
 - **Late cancellation register** with per-person counts, session dates, and removal buttons in Telegram.
+- **Undo for register edits**, post-practice reminders, and deduplicated export problem alerts.
 - **Interactive SSO sign-in** with a reusable local session. Passwords are entered only on the university login page.
 - **Independent background workers** for exports and Telegram, installed as macOS LaunchAgents.
 - **Optional VPN handling** through macOS network profiles or Shortcuts, with restoration after requests and recovery after interruption.
@@ -114,6 +115,7 @@ The example uses `Europe/Moscow` and a 60-minute lead time. All entries are conf
 | `/check` | Compare the most recent session that has started |
 | `/check YYYY-MM-DD` | Compare a specific session |
 | `/violations` | Show possible late cancellations, counters, dates, −1 and removal buttons |
+| `/undo` | Undo the latest counter decrease or full removal |
 | `/status` | Show recent snapshot jobs and the next scheduled capture |
 | `/help` | Show usage instructions |
 
@@ -137,9 +139,39 @@ session can add the person again. An old button cannot reduce a counter that has
 changed since it was displayed: the bot refreshes the list and asks you to use the
 updated button.
 
+Use `/undo` or **↩️ Отменить последнее действие** to reverse a counter decrease or
+full removal, even when the list became empty or the bot restarted. The last 20
+edits made after this feature is installed can be undone, newest first. Undo
+restores individual cases, preserving new cases and newer website corrections.
+Retrying delivery of the same command does not undo an extra edit.
+
 The register is stored in `.state/violations.json` with a file lock and atomic
 writes. It is excluded from Git. Removing a register entry does not change the
 original snapshots, comparison reports, website registrations, or attendance hours.
+
+## Reminders and problem alerts
+
+The bot reminds the owner to save attendance hours and send `/check YYYY-MM-DD`
+15 minutes after a session ends. A saved final comparison suppresses that
+session's reminder; preliminary comparisons do not. The end time comes from the
+saved calendar event, with `training_duration_minutes` (90 by default) as a
+fallback. `reminder_delay_minutes` controls the delay.
+
+With the example timetable and 90-minute sessions, reminders are Thursday 21:45,
+Saturday 20:15, and Sunday 19:45, all in `Europe/Moscow`. Missed reminders expire
+after three hours; installation does not broadcast old reminders.
+
+The independent Telegram worker also watches capture jobs and startup status. It
+alerts about authentication, permission, data validation, and collection errors;
+missed captures; unreadable journals; and invalid saved snapshots. A missing job
+can be detected after its deadline even if the exporter did not start. Alerts
+use fixed safe descriptions, never raw credential-bearing error details.
+
+Delivery checkpoints are stored in `.state/telegram-service-notifications.json`.
+Repeated retries and restarts do not normally repeat the same alert or reminder.
+These features require the Mac and Telegram worker to be running; internet
+outages delay delivery, and a lost acknowledgement can still cause a duplicate.
+They do not make extra sports-site requests or mark attendance automatically.
 
 ## Engineering choices
 
@@ -179,6 +211,7 @@ sportsite.py              API access, SSO, exports, scheduler, and CLI
 telegram_bot.py           Private bot, commands, and roster notifications
 attendance_report.py      Baseline validation and attendance comparison
 violation_registry.py     Local late cancellation counts and durable dismissals
+bot_notifications.py      Post-practice reminders and export problem alerts
 vpn_control.py            Optional macOS VPN pause and recovery
 api_auth.py               Optional personal InNoHassle token support
 config.example.json       Shareable configuration template

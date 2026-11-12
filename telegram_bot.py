@@ -23,6 +23,7 @@ from attendance_report import display_name, load_baseline, text_report
 from sportsite import (Config, INSTALL_ROOT, ROOT, SportError, atomic_write,
                        parse_datetime, private_dir, write_json)
 from violation_registry import ViolationRegistry
+from bot_notifications import ServiceNotifications
 
 LOG = logging.getLogger("sportsite")
 BOT_LABEL = "university.innopolis.badminton-telegram"
@@ -30,6 +31,7 @@ TOKEN_PATTERN = re.compile(r"[0-9]{5,20}:[A-Za-z0-9_-]{20,200}\Z")
 BOT_COMMANDS = [
     {"command": "check", "description": "Сравнить снимок записи и посещаемость"},
     {"command": "violations", "description": "Поздние отмены и удаление из журнала"},
+    {"command": "undo", "description": "Отменить последнее списание или удаление"},
     {"command": "status", "description": "Снимки и ближайшая выгрузка"},
     {"command": "help", "description": "Как пользоваться ботом"},
 ]
@@ -37,6 +39,7 @@ HELP = ("🏸 Бадминтон · Beginners\n\n"
         "/check — сравнить последнее начавшееся занятие\n"
         "/check YYYY-MM-DD — сравнить занятие за указанную дату\n"
         "/violations — счётчики поздних отмен, −1 и удаление\n"
+        "/undo — отменить последнее списание или удаление\n"
         "/status — состояние снимков и ближайшая выгрузка\n"
         "/help — эта справка\n\n"
         "После успешной плановой выгрузки автоматически приходит список записавшихся.\n\n"
@@ -362,7 +365,7 @@ def status_text(config):
     return "\n".join(lines)
 
 
-def violations_page(config, rows, page=0, notice=None):
+def violations_page(config, rows, page=0, notice=None, undo_id=None):
     page_size = 5
     pages = max(1, (len(rows) + page_size - 1) // page_size)
     page = max(0, min(page, pages - 1))
@@ -393,6 +396,8 @@ def violations_page(config, rows, page=0, notice=None):
         navigation.append({"text": "Далее →", "callback_data": "vr:page:%s" % (page + 1)})
     if navigation:
         keyboard.append(navigation)
+    if undo_id:
+        keyboard.append([{"text": "↩️ Отменить последнее действие", "callback_data": "vr:undo:" + undo_id}])
     lines.extend(["", "Это возможные поздние отмены: были в снимке, затем исчезли без часов. "
                   "Кто отменил запись, сайт не сообщает.",
                   "«−1» списывает самый ранний случай. При 0 участник исчезает из списка. "
@@ -405,7 +410,7 @@ def violations_page(config, rows, page=0, notice=None):
 def show_violations(config, settings, api, page=0, message=None, notice=None):
     registry = ViolationRegistry(config)
     registry.sync_history()
-    text, markup = violations_page(config, registry.rows(), page, notice)
+    text, markup = violations_page(config, registry.rows(), page, notice, undo_id=registry.latest_undo())
     if message is None:
         api.send(settings["chat_id"], text, reply_markup=markup)
     elif message.get("text") != text or message.get("reply_markup") != markup:
@@ -423,8 +428,16 @@ def handle_callback(config, settings, api, callback):
             or not isinstance(callback.get("id"), str)):
         return
     data = callback.get("data", "")
-    match = re.fullmatch(r"vr:(?:page:(?P<page>[0-9]{1,6})|(?P<action>del|dec):(?P<student>[1-9][0-9]{0,18}):(?P<revision>[0-9a-f]{16}):(?P<return_page>[0-9]{1,6}))", data) if isinstance(data, str) else None
-    api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+    pattern = (r"vr:(?:page:(?P<page>[0-9]{1,6})|undo:(?P<undo>[0-9a-f]{16})|"
+               r"(?P<action>del|dec):(?P<student>[1-9][0-9]{0,18}):"
+               r"(?P<revision>[0-9a-f]{16}):(?P<return_page>[0-9]{1,6}))")
+    match = re.fullmatch(pattern, data) if isinstance(data, str) else None
+    try:
+        api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+    except TelegramError:
+        # An expired callback must not stall the update queue or perform a write.
+        LOG.warning("Telegram: не удалось подтвердить нажатие кнопки; действие не выполнено.")
+        return
     if match is None:
         return
     try:
@@ -434,7 +447,11 @@ def handle_callback(config, settings, api, callback):
             registry.sync_history()
             operation = registry.decrement if match["action"] == "dec" else registry.dismiss
             notice = operation(int(match["student"]), match["revision"])
-        show_violations(config, settings, api, int(match["page"] or match["return_page"]), message=message, notice=notice)
+        elif match["undo"]:
+            registry = ViolationRegistry(config)
+            registry.sync_history()
+            notice = registry.undo(expected_id=match["undo"], request_id="callback:" + callback["id"])
+        show_violations(config, settings, api, int(match["page"] or match["return_page"] or 0), message=message, notice=notice)
     except (SportError, OSError) as exc:
         detail = str(exc) if isinstance(exc, SportError) else "Не удалось сохранить журнал поздних отмен."
         api.send(settings["chat_id"], "⚠️ " + detail)
@@ -479,6 +496,18 @@ def handle_update(config, settings, api, update, reporter=run_report, now=None):
         except (SportError, OSError) as exc:
             detail = str(exc) if isinstance(exc, SportError) else "Не удалось открыть журнал поздних отмен."
             api.send(settings["chat_id"], "⚠️ " + detail)
+    elif command == "/undo":
+        if len(parts) != 1:
+            api.send(settings["chat_id"], "Отправь /undo без параметров — отменить последнее списание или удаление.")
+            return
+        try:
+            registry = ViolationRegistry(config)
+            registry.sync_history()
+            answer = registry.undo(request_id="update:" + str(update["update_id"]))
+            show_violations(config, settings, api, notice=answer)
+        except (SportError, OSError) as exc:
+            detail = str(exc) if isinstance(exc, SportError) else "Не удалось сохранить отмену действия."
+            api.send(settings["chat_id"], "⚠️ " + detail)
     elif command == "/check":
         try:
             if len(parts) > 2 or (len(parts) == 2 and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[1])):
@@ -517,18 +546,19 @@ def serve(config):
             api.call("setMyCommands", {"commands": BOT_COMMANDS})
         except TelegramError as exc:
             LOG.warning("Telegram: меню команд не обновлено: %s", exc)
-        notifications = SnapshotNotifications(config, settings, api)
-        notify_after = 0
+        notifications = [SnapshotNotifications(config, settings, api), ServiceNotifications(config, settings, api)]
+        notify_after = [0] * len(notifications)
         backoff = 2
         while True:
-            if time.monotonic() >= notify_after:
-                try:
-                    notifications.tick()
-                    notify_after = 0
-                except (SportError, OSError) as exc:
-                    detail = str(exc) if isinstance(exc, SportError) else "Не удалось сохранить журнал уведомления."
-                    LOG.warning("Telegram, уведомления: %s", detail)
-                    notify_after = time.monotonic() + 60
+            for index, worker in enumerate(notifications):
+                if time.monotonic() >= notify_after[index]:
+                    try:
+                        worker.tick()
+                        notify_after[index] = 0
+                    except (SportError, OSError) as exc:
+                        detail = str(exc) if isinstance(exc, SportError) else "Не удалось сохранить журнал уведомления."
+                        LOG.warning("Telegram, уведомления: %s", detail)
+                        notify_after[index] = time.monotonic() + 60
             try:
                 for update in api.updates(offset):
                     if update["update_id"] < offset:
@@ -549,7 +579,7 @@ def install_listener(config):
     # Use the same protected runtime as the snapshot agent, with an independent listener.
     private_dir(INSTALL_ROOT)
     for name in ("sportsite.py", "attendance_report.py", "telegram_bot.py", "vpn_control.py", "api_auth.py",
-                 "violation_registry.py"):
+                 "violation_registry.py", "bot_notifications.py"):
         source, target = ROOT / name, INSTALL_ROOT / name
         if source.resolve() != target.resolve():
             atomic_write(target, source.read_text(encoding="utf-8"))

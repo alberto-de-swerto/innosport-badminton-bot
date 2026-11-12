@@ -225,6 +225,47 @@ class ViolationCommandTests(TemporaryProject):
         api = self.handle(update(text="/violations"))
         self.assertIn("не перезаписаны", api.send.call_args.args[1])
 
+    def test_undo_command_restores_deleted_person_and_duplicate_update_is_safe(self):
+        registry = ViolationRegistry(self.config)
+        registry.record(report())
+        registry.record(report(training_id=102))
+        registry.decrement(2, registry.rows()[0]["revision"])
+        registry.decrement(2, registry.rows()[0]["revision"])
+        api = self.handle(update(ident=200, text="/undo"))
+        self.assertIn("Восстановлено случаев: 1", api.send.call_args.args[1])
+        self.assertEqual(registry.rows()[0]["count"], 1)
+        self.handle(update(ident=200, text="/undo"))
+        self.assertEqual(registry.rows()[0]["count"], 1)
+
+    def test_undo_button_is_available_even_for_empty_list_and_owner_only(self):
+        registry = ViolationRegistry(self.config)
+        registry.record(report())
+        registry.dismiss(2, registry.rows()[0]["revision"])
+        api = self.handle(update(text="/violations"))
+        markup = api.send.call_args.kwargs["reply_markup"]
+        data = markup["inline_keyboard"][-1][0]["callback_data"]
+        self.assertTrue(data.startswith("vr:undo:"))
+        self.handle(self.callback(data, user=88))
+        self.assertEqual(registry.rows(), [])
+        api = self.handle(self.callback(data))
+        self.assertEqual(registry.rows()[0]["count"], 1)
+        self.assertIn("Восстановлено случаев: 1", api.call.call_args.args[1]["text"])
+
+    def test_invalid_undo_arguments_do_not_modify_counter(self):
+        api = self.handle(update(text="/undo extra"))
+        self.assertIn("без параметров", api.send.call_args.args[1])
+
+    def test_expired_callback_does_not_change_registry_or_stall_update_queue(self):
+        registry = ViolationRegistry(self.config)
+        registry.record(report())
+        _, markup = bot.violations_page(self.config, registry.rows())
+        value = self.callback(markup["inline_keyboard"][0][0]["callback_data"])
+        api = mock.Mock()
+        api.call.side_effect = bot.TelegramError("expired callback")
+        with self.assertLogs("sportsite", "WARNING"):
+            bot.handle_update(self.config, SETTINGS, api, value, now=NOW)
+        self.assertEqual(registry.rows()[0]["count"], 1)
+
 
 class PairingTests(TemporaryProject):
     def test_pairing_needs_unpredictable_code_and_private_matching_identity(self):

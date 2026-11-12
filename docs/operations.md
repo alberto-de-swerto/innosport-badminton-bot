@@ -86,6 +86,16 @@ current cases. People disappear automatically at zero. The list is updated by fi
 included when the register is opened. Deletions survive runtime updates as long
 as `.state/violations.json` is retained.
 
+Use `/undo` or the undo button to restore the last counter edit, including a full
+removal. It supports the latest 20 edits recorded since the update was installed.
+New violations and website corrections are preserved when undoing an edit.
+
+The same local register file contains counters, approved screenshot cases,
+dismissals, and undo history. Preserve it when moving or reinstalling the runtime.
+Saved source reports live in `reports/`, and original rosters in `exports/`.
+These local files are excluded from GitHub. Keeping them only on this Mac does
+not provide recovery from loss of the Mac or its drive.
+
 Restart the installed workers after editing the active configuration:
 
 ```sh

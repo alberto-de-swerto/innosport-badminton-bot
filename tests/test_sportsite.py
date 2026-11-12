@@ -81,6 +81,20 @@ class ScheduleTests(TemporaryProject):
                 with self.assertRaises(sportsite.SportError):
                     sportsite.Config.load(self.root / "invalid.json")
 
+    def test_reminder_settings_validate_and_old_configs_keep_defaults(self):
+        for key, value in (("training_duration_minutes", 0), ("training_duration_minutes", True),
+                           ("reminder_delay_minutes", -1), ("reminder_delay_minutes", "15")):
+            with self.subTest(key=key, value=value):
+                raw = dict(self.raw_config, **{key: value})
+                sportsite.write_json(self.root / "invalid.json", raw)
+                with self.assertRaises(sportsite.SportError):
+                    sportsite.Config.load(self.root / "invalid.json")
+        self.raw_config.pop("training_duration_minutes")
+        self.raw_config.pop("reminder_delay_minutes")
+        config = self.reload_config()
+        self.assertEqual(config.training_duration_minutes, 90)
+        self.assertEqual(config.reminder_delay_minutes, 15)
+
     def test_only_sport_session_is_saved_with_private_permissions(self):
         def cookie(name, domain):
             return {"name": name, "value": "fictional", "domain": domain, "path": "/"}
@@ -134,6 +148,7 @@ class ScheduleTests(TemporaryProject):
         self.assertEqual(deployed.root, destination.resolve())
         self.assertTrue((destination / "sportsite.py").is_file())
         self.assertTrue((destination / "violation_registry.py").is_file())
+        self.assertTrue((destination / "bot_notifications.py").is_file())
         self.assertEqual(json.loads(deployed.auth_path.read_text()),
                          json.loads(self.config.auth_path.read_text()))
         self.assertEqual(deployed.auth_path.stat().st_mode & 0o777, 0o600)
@@ -170,6 +185,7 @@ class ExportTests(TemporaryProject):
         self.assertEqual(snapshot["participant_count"], 2)
         self.assertEqual(snapshot["captured_at"], DUE.isoformat())
         self.assertEqual(snapshot["training_start"], START.isoformat())
+        self.assertEqual(snapshot["training_end"], (START + timedelta(minutes=90)).isoformat())
         self.assertEqual(snapshot["delay_seconds"], 0)
         self.assertIn("Тестовый Участник", (directory / "participants.csv").read_text())
         self.assertEqual((directory / "snapshot.json").stat().st_mode & 0o777, 0o600)
@@ -183,6 +199,17 @@ class ExportTests(TemporaryProject):
         self.assertNotEqual(manual, scheduled)
         self.assertIn("_manual_", manual.name)
         self.assertEqual(json.loads((manual / "snapshot.json").read_text())["mode"], "manual")
+
+    def test_calendar_end_is_saved_for_post_training_reminder(self):
+        @contextmanager
+        def connector(config):
+            api = mock.Mock()
+            api.find.return_value = dict(EVENT, end=(START + timedelta(minutes=60)).isoformat())
+            api.roster.return_value = deepcopy(PEOPLE)
+            yield api
+        directory = sportsite.collect(self.config, START, True, clock=lambda: DUE, connector=connector)
+        self.assertEqual(json.loads((directory / "snapshot.json").read_text())["training_end"],
+                         (START + timedelta(minutes=60)).isoformat())
 
     def test_never_backdates_an_early_late_or_started_training(self):
         for at in (DUE - timedelta(seconds=1), DUE + timedelta(seconds=121), START):

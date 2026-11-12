@@ -57,6 +57,15 @@ owner checks as text commands. Callback data contains stable student IDs and a
 digest of the currently listed cases, rather than names or positions in a table.
 A stale removal button refreshes the list without dismissing newer cases.
 
+`bot_notifications.py` runs alongside roster notifications with an independent
+retry timer. It reads capture jobs, startup health, saved snapshots, and final
+reports without calling the sports website. Per-event delivery checkpoints
+deduplicate errors, missed jobs, and reminders across restarts. A final report
+suppresses the reminder; a three-hour window prevents stale reminder floods.
+The snapshot keeps a validated calendar end when available; older files use the
+configured duration. Startup failures and typed retry causes are persisted by
+the exporter so the Telegram process can explain failures even after it exits.
+
 ## Attendance comparison
 
 `attendance_report.py` selects the most recent started session, or an explicitly
@@ -81,10 +90,18 @@ counting. Individual imported cases require explicit owner confirmation through
 
 The register uses a separate file lock and atomic JSON writes. The −1 button
 dismisses the oldest active case; a zero counter removes the person from the view.
-Removing a person dismisses all their current cases. Identifier-only tombstones
-prevent rechecks or backfills from resurrecting forgiven cases. New sessions
-remain eligible.
+Removing a person dismisses all their current cases. Tombstones prevent rechecks
+or backfills from resurrecting forgiven cases. The current source cases remain
+separate from their visibility, allowing undo to respect newer attendance
+corrections. New sessions remain eligible.
 Neither dismissal nor backfill modifies snapshots, source reports, or the site.
+
+The register retains the last 20 reversible edits, including the affected cases
+and their source. `/undo` restores only those cases instead of rolling the whole
+file back, preserving concurrent new cases and newer website corrections. Undo
+requests are checkpointed to prevent a retried update from undoing another edit.
+Old callback IDs cannot undo a different latest action. Edits made before this
+history existed cannot be undone from the new command.
 
 The comparison cannot reconstruct a cancellation timeline, identify who removed
 a booking, or establish physical presence independently of saved hours.

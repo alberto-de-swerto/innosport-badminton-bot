@@ -6,6 +6,8 @@
   "max_lateness_seconds": 120,
   "request_timeout_seconds": 20,
   "poll_seconds": 10,
+  "training_duration_minutes": 90,
+  "reminder_delay_minutes": 15,
   "vpn_control": {
     "enabled": false
   },

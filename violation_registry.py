@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+import secrets
 
 from sportsite import DataError, parse_datetime, positive_id, private_dir, write_json
 
@@ -95,9 +96,29 @@ class ViolationRegistry:
                 if (case["source"] != "confirmed_import"
                         or key != incident_key(case, case["person"]["student_id"])):
                     raise ValueError()
+            state.setdefault("undo_history", [])
+            state.setdefault("undo_results", {})
+            if (not isinstance(state["undo_history"], list) or len(state["undo_history"]) > 20
+                    or not isinstance(state["undo_results"], dict) or len(state["undo_results"]) > 50
+                    or any(not isinstance(k, str) or not isinstance(v, str)
+                           for k, v in state["undo_results"].items())):
+                raise ValueError()
+            for action in state["undo_history"]:
+                if (not re.fullmatch(r"[0-9a-f]{16}", action["id"])
+                        or action["kind"] not in ("decrement", "dismiss")
+                        or not isinstance(action["cases"], list) or not action["cases"]):
+                    raise ValueError()
+                parse_datetime(action["created_at"])
+                for case in action["cases"]:
+                    validate_session(dict(case, cancelled=[case["person"]]))
+                    if case["source"] not in ("scheduled", "confirmed_import"):
+                        raise ValueError()
+                    if case["source"] == "confirmed_import":
+                        parse_datetime(case["confirmed_at"])
             return state
         except FileNotFoundError:
-            return {"schema_version": 1, "sessions": {}, "dismissed": [], "confirmed_cases": {}}
+            return {"schema_version": 1, "sessions": {}, "dismissed": [], "confirmed_cases": {},
+                    "undo_history": [], "undo_results": {}}
         except (OSError, ValueError, KeyError, TypeError, AttributeError, DataError):
             raise DataError("Не удалось прочитать журнал поздних отмен. Данные не перезаписаны.") from None
 
@@ -107,9 +128,8 @@ class ViolationRegistry:
         previous = state["sessions"].get(key)
         if previous and parse_datetime(previous["checked_at"]) >= parse_datetime(session["checked_at"]):
             return False
-        dismissed = set(state["dismissed"])
-        session = dict(session, cancelled=[p for p in session["cancelled"]
-                                         if incident_key(session, p["student_id"]) not in dismissed])
+        # Retain current source data, including dismissed cases, so undo can respect
+        # later attendance corrections without rolling the entire register back.
         state["sessions"][key] = session
         return True
 
@@ -210,10 +230,23 @@ class ViolationRegistry:
                 return "Список изменился. Проверь новые записи и нажми кнопку ещё раз."
             incidents = person["incidents"] if clear else person["incidents"][-1:]
             keys = {incident["key"] for incident in incidents}
+            cases = []
+            for incident in incidents:
+                key = incident["key"]
+                if incident["source"] == "confirmed_import":
+                    cases.append(state["confirmed_cases"][key])
+                else:
+                    session = state["sessions"][key.rsplit(":", 1)[0]]
+                    case = {field: session[field] for field in
+                            ("training_id", "group_id", "training_start", "checked_at")}
+                    cases.append(dict(case, person={"student_id": student_id, "full_name": person["full_name"]},
+                                      source="scheduled"))
+            state["undo_history"].append({"id": secrets.token_hex(8),
+                                          "created_at": self.config.now().isoformat(),
+                                          "kind": "dismiss" if clear else "decrement", "cases": cases})
+            state["undo_history"] = state["undo_history"][-20:]
             dismissed = set(state["dismissed"]) | keys
             state["dismissed"] = sorted(dismissed)
-            for session in state["sessions"].values():
-                session["cancelled"] = [p for p in session["cancelled"] if incident_key(session, p["student_id"]) not in keys]
             for key in keys:
                 state["confirmed_cases"].pop(key, None)
             write_json(self.path, state)
@@ -223,3 +256,45 @@ class ViolationRegistry:
             if not remaining:
                 return "Счётчик: 0. Участник убран из списка."
             return "Счётчик: %s → %s. Списан самый ранний случай." % (person["count"], remaining)
+
+    def latest_undo(self):
+        with self.locked():
+            history = self.load()["undo_history"]
+            return history[-1]["id"] if history else None
+
+    def undo(self, expected_id=None, request_id=None):
+        """Restore one action, preserving new cases and newer site corrections."""
+        with self.locked():
+            state = self.load()
+            if request_id and request_id in state["undo_results"]:
+                return state["undo_results"][request_id]
+            if not state["undo_history"]:
+                return "Нет действий для отмены. Можно отменить последние 20 списаний и удалений."
+            action = state["undo_history"][-1]
+            if expected_id is not None and expected_id != action["id"]:
+                return "Эта кнопка устарела. Используй /undo или новую кнопку под списком."
+            dismissed = set(state["dismissed"])
+            restored, corrected = 0, 0
+            for case in action["cases"]:
+                person = case["person"]
+                key = incident_key(case, person["student_id"])
+                if case["source"] == "confirmed_import":
+                    state["confirmed_cases"][key] = case
+                else:
+                    current = state["sessions"].get(session_key(case))
+                    if current is None or not any(p["student_id"] == person["student_id"]
+                                                  for p in current["cancelled"]):
+                        corrected += 1
+                        continue
+                dismissed.discard(key)
+                restored += 1
+            state["dismissed"] = sorted(dismissed)
+            state["undo_history"].pop()
+            answer = "↩️ Последнее действие отменено. Восстановлено случаев: %s." % restored
+            if corrected:
+                answer += " Уже исправлены на сайте и не восстановлены: %s." % corrected
+            if request_id:
+                state["undo_results"][request_id] = answer
+                state["undo_results"] = dict(list(state["undo_results"].items())[-50:])
+            write_json(self.path, state)
+            return answer

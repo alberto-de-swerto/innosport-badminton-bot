@@ -55,6 +55,35 @@ class TooLateError(SportError):
     pass
 
 
+def failure_kind(error):
+    if isinstance(error, AuthError):
+        return "auth"
+    if isinstance(error, PermissionError):
+        return "permission"
+    if isinstance(error, DataError):
+        return "data"
+    return "export"
+
+
+def worker_health(config, now, error=None):
+    """Small, credential-free startup status for the independent Telegram worker."""
+    path = config.root / ".state" / "worker-health.json"
+    state = {"schema_version": 1, "status": "error" if error else "ready",
+             "kind": failure_kind(error) if error else None, "observed_at": now.isoformat()}
+    try:
+        private_dir(path.parent)
+        if path.exists():
+            try:
+                old = json.loads(path.read_text(encoding="utf-8"))
+                if old.get("status") == state["status"] and old.get("kind") == state["kind"]:
+                    return
+            except (ValueError, AttributeError):
+                pass
+        write_json(path, state)
+    except OSError:
+        LOG.warning("Не удалось сохранить состояние фонового сборщика.")
+
+
 def parse_datetime(value: str) -> datetime:
     result = datetime.fromisoformat(value.replace("Z", "+00:00"))
     if result.tzinfo is None:
@@ -103,6 +132,8 @@ class Config:
     request_timeout_seconds: int
     poll_seconds: int
     vpn_control: dict = field(default_factory=dict)
+    training_duration_minutes: int = 90
+    reminder_delay_minutes: int = 15
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -130,6 +161,11 @@ class Config:
             if numbers["max_lateness_seconds"] >= numbers["lead_minutes"] * 60:
                 raise ValueError("окно опоздания должно заканчиваться до тренировки")
             groups = frozenset(positive_id(item) for item in raw["group_ids"])
+            duration = raw.get("training_duration_minutes", 90)
+            reminder_delay = raw.get("reminder_delay_minutes", 15)
+            if (type(duration) is not int or not 1 <= duration <= 720
+                    or type(reminder_delay) is not int or not 0 <= reminder_delay <= 180):
+                raise ValueError("Некорректная длительность занятия или задержка напоминания")
             pattern = re.compile(raw["title_pattern"], re.IGNORECASE)
             if not raw["title_pattern"].strip():
                 raise ValueError("title_pattern не должен быть пустым")
@@ -143,7 +179,8 @@ class Config:
                        for key in ("connect_shortcut", "disconnect_shortcut")):
                     raise ValueError("Укажите обе команды управления VPN")
             return cls(path.resolve().parent, ZoneInfo(raw["timezone"]), pattern,
-                       groups, schedule, vpn_control=vpn, **numbers)
+                       groups, schedule, vpn_control=vpn, training_duration_minutes=duration,
+                       reminder_delay_minutes=reminder_delay, **numbers)
         except (OSError, ValueError, KeyError, TypeError, re.error, SportError) as exc:
             raise SportError("Ошибка в config.json: " + str(exc)) from None
 
@@ -486,6 +523,13 @@ def collect(config: Config, start: datetime, scheduled: bool,
         people = api.roster(event, start)
         # Capture time belongs to the data response, before restoring the VPN connection.
         captured_at = now()
+    end = start + timedelta(minutes=config.training_duration_minutes)
+    try:
+        calendar_end = parse_datetime(event["end"])
+        if start < calendar_end <= start + timedelta(days=1):
+            end = calendar_end
+    except (KeyError, ValueError, TypeError, AttributeError, SportError):
+        pass
     if captured_at >= start or (scheduled and (captured_at - due).total_seconds() > config.max_lateness_seconds):
         raise TooLateError("Ответ сайта получен слишком поздно. Плановый снимок не сохранён.")
     snapshot = {
@@ -495,6 +539,7 @@ def collect(config: Config, start: datetime, scheduled: bool,
         "group_id": event["extendedProps"]["group_id"],
         "title": event["title"],
         "training_start": start.isoformat(),
+        "training_end": end.isoformat(),
         "scheduled_capture_at": due.isoformat(),
         "request_started_at": requested_at.isoformat(),
         "captured_at": captured_at.isoformat(),
@@ -557,22 +602,27 @@ class Scheduler:
                     if completed:
                         jobs[key] = {"status": "saved", "path": str(completed[0].parent)}
                         write_json(self.state_path, jobs)
+                        worker_health(self.config, now)
                         continue
                     if now > due + timedelta(seconds=self.config.max_lateness_seconds):
-                        jobs[key] = {"status": "missed", "recorded_at": now.isoformat()}
+                        previous = jobs.get(key, {})
+                        jobs[key] = {"status": "missed", "recorded_at": now.isoformat(),
+                                     **{k: previous[k] for k in ("error_kind", "error", "last_attempt_at") if k in previous}}
                         LOG.error("ПРОПУСК %s: время снимка было %s.", key, due.isoformat())
                         write_json(self.state_path, jobs)
                         continue
                     try:
                         path = self.collector(self.config, start, scheduled=True)
                         jobs[key] = {"status": "saved", "path": str(path)}
+                        worker_health(self.config, now)
                         LOG.info("Список сохранён: %s", path)
                     except SportError as exc:
                         failures += 1
                         previous = jobs.get(key, {})
                         if previous.get("error") != str(exc):
                             LOG.error("Выгрузка %s: %s", key, exc)
-                        jobs[key] = {"status": "retry", "error": str(exc), "last_attempt_at": now.isoformat()}
+                        jobs[key] = {"status": "retry", "error": str(exc), "error_kind": failure_kind(exc),
+                                     "last_attempt_at": now.isoformat()}
                     write_json(self.state_path, jobs)
             return failures
 
@@ -598,10 +648,14 @@ def run(config: Config, once: bool) -> int:
         return 1 if scheduler.tick(config.now()) else 0
     try:
         check(config)
-    except (AuthError, PermissionError, DataError):
+    except (AuthError, PermissionError, DataError) as exc:
+        worker_health(config, config.now(), exc)
         raise
     except SportError as exc:
+        worker_health(config, config.now(), exc)
         LOG.warning("Начальная проверка: %s Ожидание продолжится, запрос повторится в момент выгрузки.", exc)
+    else:
+        worker_health(config, config.now())
     show_schedule(config)
     LOG.info("Ожидание включено. Компьютер должен быть включён, без сна и с доступом к сайту.")
     while True:
@@ -642,7 +696,7 @@ def deploy_runtime(config: Config, config_path: Path) -> Config:
         state = load_session(config)
     private_dir(INSTALL_ROOT)
     for name in ("sportsite.py", "api_auth.py", "vpn_control.py", "attendance_report.py", "telegram_bot.py",
-                 "violation_registry.py", "requirements.txt"):
+                 "violation_registry.py", "bot_notifications.py", "requirements.txt"):
         source, target = ROOT / name, INSTALL_ROOT / name
         if source.resolve() != target.resolve():
             atomic_write(target, source.read_text(encoding="utf-8"))

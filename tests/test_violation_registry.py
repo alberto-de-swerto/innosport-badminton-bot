@@ -156,3 +156,58 @@ class RegistryTests(TemporaryProject):
         with ThreadPoolExecutor(max_workers=5) as workers:
             list(workers.map(lambda data: ViolationRegistry(self.config).record(data), reports))
         self.assertEqual(self.registry.rows()[0]["count"], 20)
+
+    def test_undo_restores_decrement_after_restart_and_preserves_new_cases(self):
+        self.registry.record(report())
+        row = self.registry.rows()[0]
+        self.registry.decrement(row["student_id"], row["revision"])
+        action = self.registry.latest_undo()
+        self.assertEqual(self.registry.rows(), [])
+        self.registry.record(report(102, START + timedelta(days=2)))
+        restarted = ViolationRegistry(self.config)
+        self.assertIn("Восстановлено случаев: 1", restarted.undo(expected_id=action))
+        self.assertEqual(restarted.rows()[0]["count"], 2)
+        self.assertIsNone(restarted.latest_undo())
+
+    def test_undo_restores_full_deletion_and_confirmed_import_with_source(self):
+        self.registry.confirm_import(dict(report(), baseline_mode="user_import"), 2)
+        self.registry.record(report(102, START + timedelta(days=2)))
+        row = self.registry.rows()[0]
+        self.registry.dismiss(2, row["revision"])
+        self.assertEqual(self.registry.rows(), [])
+        self.assertIn("Восстановлено случаев: 2", self.registry.undo())
+        restored = self.registry.rows()[0]
+        self.assertEqual(restored["count"], 2)
+        self.assertEqual(restored["incidents"][-1]["source"], "confirmed_import")
+
+    def test_undo_request_retry_is_idempotent_and_old_button_does_not_undo_another_action(self):
+        self.registry.record(report())
+        self.registry.record(report(102, START + timedelta(days=2)))
+        row = self.registry.rows()[0]
+        self.registry.decrement(2, row["revision"])
+        old_action = self.registry.latest_undo()
+        self.registry.decrement(2, self.registry.rows()[0]["revision"])
+        self.assertIn("устарела", self.registry.undo(expected_id=old_action))
+        result = self.registry.undo(request_id="update:100")
+        self.assertEqual(self.registry.rows()[0]["count"], 1)
+        self.assertEqual(self.registry.undo(request_id="update:100"), result)
+        self.assertEqual(self.registry.rows()[0]["count"], 1)
+        self.registry.undo(expected_id=old_action, request_id="update:101")
+        self.assertEqual(self.registry.rows()[0]["count"], 2)
+
+    def test_undo_does_not_resurrect_a_case_corrected_on_the_website(self):
+        self.registry.record(report())
+        row = self.registry.rows()[0]
+        self.registry.decrement(2, row["revision"])
+        self.registry.record(report(cancelled=[], checked=START + timedelta(hours=4)))
+        answer = self.registry.undo()
+        self.assertIn("не восстановлены: 1", answer)
+        self.assertEqual(self.registry.rows(), [])
+
+    def test_undo_history_is_bounded_and_empty_history_does_not_change_state(self):
+        self.assertIn("Нет действий", self.registry.undo())
+        for ident in range(101, 123):
+            self.registry.record(report(ident, START + timedelta(days=ident - 101)))
+            row = self.registry.rows()[0]
+            self.registry.decrement(2, row["revision"])
+        self.assertEqual(len(self.registry.load()["undo_history"]), 20)
