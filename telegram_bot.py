@@ -22,13 +22,21 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from attendance_report import display_name, load_baseline, text_report
 from sportsite import (Config, INSTALL_ROOT, ROOT, SportError, atomic_write,
                        parse_datetime, private_dir, write_json)
+from violation_registry import ViolationRegistry
 
 LOG = logging.getLogger("sportsite")
 BOT_LABEL = "university.innopolis.badminton-telegram"
 TOKEN_PATTERN = re.compile(r"[0-9]{5,20}:[A-Za-z0-9_-]{20,200}\Z")
+BOT_COMMANDS = [
+    {"command": "check", "description": "Сравнить снимок записи и посещаемость"},
+    {"command": "violations", "description": "Поздние отмены и удаление из журнала"},
+    {"command": "status", "description": "Снимки и ближайшая выгрузка"},
+    {"command": "help", "description": "Как пользоваться ботом"},
+]
 HELP = ("🏸 Бадминтон · Beginners\n\n"
         "/check — сравнить последнее начавшееся занятие\n"
         "/check YYYY-MM-DD — сравнить занятие за указанную дату\n"
+        "/violations — журнал поздних отмен и кнопки удаления\n"
         "/status — состояние снимков и ближайшая выгрузка\n"
         "/help — эта справка\n\n"
         "После успешной плановой выгрузки автоматически приходит список записавшихся.\n\n"
@@ -81,16 +89,20 @@ class TelegramAPI:
 
     def updates(self, offset, timeout=25):
         result = self.call("getUpdates", {"offset": offset, "timeout": timeout,
-                                         "limit": 50, "allowed_updates": ["message"]}, timeout=timeout + 10)
+                                         "limit": 50, "allowed_updates": ["message", "callback_query"]}, timeout=timeout + 10)
         if (not isinstance(result, list) or any(not isinstance(row, dict)
                 or type(row.get("update_id")) is not int or row["update_id"] < 0 for row in result)):
             raise TelegramError("Изменился формат команд Telegram.")
         return sorted(result, key=lambda row: row["update_id"])
 
-    def send(self, chat_id, text):
-        for chunk in message_chunks(text):
-            self.call("sendMessage", {"chat_id": chat_id, "text": chunk,
-                                      "link_preview_options": {"is_disabled": True}})
+    def send(self, chat_id, text, reply_markup=None):
+        chunks = message_chunks(text)
+        for index, chunk in enumerate(chunks):
+            data = {"chat_id": chat_id, "text": chunk,
+                    "link_preview_options": {"is_disabled": True}}
+            if reply_markup is not None and index == len(chunks) - 1:
+                data["reply_markup"] = reply_markup
+            self.call("sendMessage", data)
 
 
 def message_chunks(text, limit=3500):
@@ -292,10 +304,7 @@ def setup(config):
                     "chat_id": paired["chat"]["id"], "user_id": paired["from"]["id"]}
         write_json(settings_path(config), settings)
         write_json(config.root / ".state" / "telegram-offset.json", {"bot_id": me["id"], "offset": offset})
-        api.call("setMyCommands", {"commands": [
-            {"command": "check", "description": "Сравнить снимок записи и посещаемость"},
-            {"command": "status", "description": "Снимки и ближайшая выгрузка"},
-            {"command": "help", "description": "Как пользоваться ботом"}]})
+        api.call("setMyCommands", {"commands": BOT_COMMANDS})
         api.send(settings["chat_id"], "✅ Бот подключён к твоему личному чату.\n\n" + HELP)
     install_listener(config)
     print("Готово. Бот работает в фоне и запускается при входе в macOS. Mac должен быть включён и не спать.")
@@ -329,7 +338,7 @@ def run_report(config, requested_date=None):
             raise TelegramError(str(payload["error"]))
         if process.returncode or payload.get("ok") is not True or not isinstance(payload["report"], dict):
             raise ValueError()
-        return text_report(payload["report"])
+        return text_report(payload["report"]) + "\n\n📒 Журнал поздних отмен и удаление записей: /violations"
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise TelegramError("Сравнение не завершилось. Проверь сессию спортсайта через login.command и повтори /check.") from None
 
@@ -353,7 +362,83 @@ def status_text(config):
     return "\n".join(lines)
 
 
+def violations_page(config, rows, page=0, notice=None):
+    page_size = 5
+    pages = max(1, (len(rows) + page_size - 1) // page_size)
+    page = max(0, min(page, pages - 1))
+    lines = ["📒 Beginners · поздние отмены", ""]
+    if notice:
+        lines.extend([notice, ""])
+    lines.extend(["Участников: %s · случаев: %s" % (len(rows), sum(p["count"] for p in rows)),
+                  "Страница %s/%s" % (page + 1, pages)])
+    keyboard = []
+    for index, person in enumerate(rows[page * page_size:(page + 1) * page_size], page * page_size + 1):
+        name = display_name(person)[:120]
+        dates = [parse_datetime(item["training_start"]).astimezone(config.timezone).strftime("%d.%m.%Y")
+                 for item in person["incidents"][:4]]
+        suffix = " · ещё %s" % (person["count"] - 4) if person["count"] > 4 else ""
+        lines.extend(["", "%s. %s" % (index, name),
+                      "Поздних отмен: %s · %s%s" % (person["count"], ", ".join(dates), suffix)])
+        keyboard.append([{"text": "🗑 Удалить: " + name[:48],
+                          "callback_data": "vr:del:%s:%s:%s" % (person["student_id"], person["revision"], page)}])
+    if not rows:
+        lines.extend(["", "Список пуст. Записи добавляются после /check по завершённым занятиям."])
+    navigation = []
+    if page:
+        navigation.append({"text": "← Назад", "callback_data": "vr:page:%s" % (page - 1)})
+    if page + 1 < pages:
+        navigation.append({"text": "Далее →", "callback_data": "vr:page:%s" % (page + 1)})
+    if navigation:
+        keyboard.append(navigation)
+    lines.extend(["", "Это возможные поздние отмены: были в снимке, затем исчезли без часов. "
+                  "Кто отменил запись, сайт не сообщает.",
+                  "Кнопка удаляет все текущие случаи участника из журнала. "
+                  "Повторный /check их не вернёт; новые отмены учитываются.",
+                  "Тесты со скриншотами и предварительные проверки не учитываются."])
+    return "\n".join(lines), {"inline_keyboard": keyboard}
+
+
+def show_violations(config, settings, api, page=0, message=None, notice=None):
+    registry = ViolationRegistry(config)
+    registry.sync_history()
+    text, markup = violations_page(config, registry.rows(), page, notice)
+    if message is None:
+        api.send(settings["chat_id"], text, reply_markup=markup)
+    elif message.get("text") != text or message.get("reply_markup") != markup:
+        api.call("editMessageText", {"chat_id": settings["chat_id"], "message_id": message["message_id"],
+                                     "text": text, "reply_markup": markup})
+
+
+def handle_callback(config, settings, api, callback):
+    message, sender = callback.get("message", {}), callback.get("from", {})
+    chat = message.get("chat", {})
+    if (chat.get("type") != "private" or chat.get("id") != settings["chat_id"]
+            or sender.get("id") != settings["user_id"] or sender.get("is_bot", True)
+            or message.get("from", {}).get("id") != settings["bot_id"]
+            or type(message.get("message_id")) is not int or message["message_id"] <= 0
+            or not isinstance(callback.get("id"), str)):
+        return
+    data = callback.get("data", "")
+    match = re.fullmatch(r"vr:(?:page:([0-9]{1,6})|del:([1-9][0-9]{0,18}):([0-9a-f]{16}):([0-9]{1,6}))", data) if isinstance(data, str) else None
+    api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
+    if match is None:
+        return
+    try:
+        notice = None
+        if match[2]:
+            registry = ViolationRegistry(config)
+            registry.sync_history()
+            notice = registry.dismiss(int(match[2]), match[3])
+        show_violations(config, settings, api, int(match[1] or match[4]), message=message, notice=notice)
+    except (SportError, OSError) as exc:
+        detail = str(exc) if isinstance(exc, SportError) else "Не удалось сохранить журнал поздних отмен."
+        api.send(settings["chat_id"], "⚠️ " + detail)
+
+
 def handle_update(config, settings, api, update, reporter=run_report, now=None):
+    if "callback_query" in update:
+        handle_callback(config, settings, api, update["callback_query"])
+        return
     message = update.get("message", {})
     chat, sender = message.get("chat", {}), message.get("from", {})
     if (chat.get("type") != "private" or chat.get("id") != settings["chat_id"]
@@ -380,6 +465,15 @@ def handle_update(config, settings, api, update, reporter=run_report, now=None):
     elif command == "/status":
         api.send(settings["chat_id"], status_text(config))
         LOG.info("Telegram: ответ /status отправлен.")
+    elif command == "/violations":
+        try:
+            if len(parts) != 1:
+                api.send(settings["chat_id"], "Отправь /violations без параметров. Страницы переключаются кнопками.")
+                return
+            show_violations(config, settings, api)
+        except (SportError, OSError) as exc:
+            detail = str(exc) if isinstance(exc, SportError) else "Не удалось открыть журнал поздних отмен."
+            api.send(settings["chat_id"], "⚠️ " + detail)
     elif command == "/check":
         try:
             if len(parts) > 2 or (len(parts) == 2 and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[1])):
@@ -414,6 +508,10 @@ def serve(config):
         except (OSError, ValueError, KeyError, TypeError):
             raise TelegramError("Повреждён журнал команд Telegram. Нужна проверка telegram-offset.json.") from None
         LOG.info("Telegram-бот включён; доступ только у привязанного владельца в личном чате.")
+        try:
+            api.call("setMyCommands", {"commands": BOT_COMMANDS})
+        except TelegramError as exc:
+            LOG.warning("Telegram: меню команд не обновлено: %s", exc)
         notifications = SnapshotNotifications(config, settings, api)
         notify_after = 0
         backoff = 2
@@ -445,7 +543,8 @@ def install_listener(config):
         raise TelegramError("Для постоянной работы на этой системе запусти sportsite.py telegram-run.")
     # Use the same protected runtime as the snapshot agent, with an independent listener.
     private_dir(INSTALL_ROOT)
-    for name in ("sportsite.py", "attendance_report.py", "telegram_bot.py", "vpn_control.py", "api_auth.py"):
+    for name in ("sportsite.py", "attendance_report.py", "telegram_bot.py", "vpn_control.py", "api_auth.py",
+                 "violation_registry.py"):
         source, target = ROOT / name, INSTALL_ROOT / name
         if source.resolve() != target.resolve():
             atomic_write(target, source.read_text(encoding="utf-8"))

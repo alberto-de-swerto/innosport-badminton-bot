@@ -26,6 +26,11 @@ running as the same OS user, or from administrators.
 
 Snapshots retain names and student IDs. Comparison reports also retain credited
 hours. Email addresses and medical information returned by the website are dropped.
+The late cancellation register keeps names, student IDs, session dates, and
+comparison timestamps. Dismissed cases retain only session/student identifiers
+to prevent a repeated comparison from restoring them; source reports and
+snapshots remain unchanged. Register pages and removal buttons are available
+only to the paired owner in their private Telegram chat.
 Telegram receives names, credited hours where relevant, and session information.
 Use the tool only with appropriate account access and inform participants about
 the club's handling of attendance data.

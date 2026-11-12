@@ -9,6 +9,8 @@ from urllib.error import HTTPError, URLError
 import sportsite
 import telegram_bot as bot
 from test_sportsite import TemporaryProject
+from test_violation_registry import report
+from violation_registry import ViolationRegistry
 
 
 TOKEN = "123456789:" + "fictional_" * 4
@@ -78,7 +80,7 @@ class TelegramTransportTests(unittest.TestCase):
         payload = json.loads(request.data)
         self.assertEqual(payload["offset"], 15)
         self.assertEqual(payload["timeout"], 25)
-        self.assertEqual(payload["allowed_updates"], ["message"])
+        self.assertEqual(payload["allowed_updates"], ["message", "callback_query"])
         self.assertEqual(request.method, "POST")
 
     def test_network_http_and_bad_json_errors_do_not_reveal_token_or_response(self):
@@ -112,6 +114,93 @@ class TelegramTransportTests(unittest.TestCase):
         api.send(77, text)
         self.assertEqual(api.call.call_count, len(chunks))
         self.assertNotIn("parse_mode", api.call.call_args.args[1])
+
+    def test_keyboard_is_attached_only_to_last_chunk(self):
+        api = bot.TelegramAPI(TOKEN)
+        api.call = mock.Mock()
+        markup = {"inline_keyboard": [[{"text": "Example", "callback_data": "vr:page:0"}]]}
+        api.send(77, "a" * 7001, reply_markup=markup)
+        self.assertEqual(api.call.call_count, 3)
+        self.assertTrue(all("reply_markup" not in call.args[1] for call in api.call.call_args_list[:-1]))
+        self.assertEqual(api.call.call_args.args[1]["reply_markup"], markup)
+
+
+class ViolationCommandTests(TemporaryProject):
+    def callback(self, data, user=77, chat=77, kind="private", bot_id=123456789):
+        return {"update_id": 2, "callback_query": {"id": "fictional-callback", "data": data,
+                "from": {"id": user, "is_bot": False},
+                "message": {"message_id": 20, "from": {"id": bot_id}, "text": "Old table",
+                            "chat": {"id": chat, "type": kind}}}}
+
+    def handle(self, value):
+        api, reporter = mock.Mock(), mock.Mock()
+        bot.handle_update(self.config, SETTINGS, api, value, reporter=reporter, now=NOW)
+        reporter.assert_not_called()
+        return api
+
+    def test_command_backfills_history_and_shows_counts_dates_and_delete_button(self):
+        sportsite.write_json(self.root / "reports" / "example" / "report.json", report())
+        api = self.handle(update(text="/violations"))
+        self.assertIn("05.11.2026", api.send.call_args.args[1])
+        self.assertIn("Поздних отмен: 1", api.send.call_args.args[1])
+        markup = api.send.call_args.kwargs["reply_markup"]
+        self.assertIn("Удалить", markup["inline_keyboard"][0][0]["text"])
+        self.assertLessEqual(len(markup["inline_keyboard"][0][0]["callback_data"].encode()), 64)
+
+    def test_owner_can_delete_in_bot_and_replayed_click_is_idempotent(self):
+        registry = ViolationRegistry(self.config)
+        registry.record(report())
+        _, markup = bot.violations_page(self.config, registry.rows())
+        value = self.callback(markup["inline_keyboard"][0][0]["callback_data"])
+        api = self.handle(value)
+        self.assertEqual(api.call.call_args_list[0].args[0], "answerCallbackQuery")
+        self.assertEqual(api.call.call_args_list[-1].args[0], "editMessageText")
+        self.assertIn("Список пуст", api.call.call_args.args[1]["text"])
+        self.assertEqual(registry.rows(), [])
+        self.handle(value)
+        self.assertEqual(registry.rows(), [])
+
+    def test_other_users_groups_spoofed_sender_and_malformed_callbacks_cannot_delete(self):
+        registry = ViolationRegistry(self.config)
+        registry.record(report())
+        _, markup = bot.violations_page(self.config, registry.rows())
+        data = markup["inline_keyboard"][0][0]["callback_data"]
+        for value in (self.callback(data, user=88), self.callback(data, chat=88),
+                      self.callback(data, kind="group"), self.callback(data, bot_id=999),
+                      self.callback("vr:del:2:forged:0"), self.callback(None)):
+            self.handle(value)
+            self.assertEqual(len(registry.rows()), 1)
+        api = self.handle(update(text="/violations", user=88))
+        api.send.assert_not_called()
+
+    def test_stale_button_refreshes_table_without_deleting_new_cases(self):
+        registry = ViolationRegistry(self.config)
+        registry.record(report())
+        _, markup = bot.violations_page(self.config, registry.rows())
+        registry.record(report(training_id=102))
+        api = self.handle(self.callback(markup["inline_keyboard"][0][0]["callback_data"]))
+        self.assertIn("изменился", api.call.call_args.args[1]["text"])
+        self.assertEqual(registry.rows()[0]["count"], 2)
+
+    def test_pagination_is_bounded_with_long_unicode_names_and_clamps_old_pages(self):
+        rows = [{"student_id": ident, "full_name": "🏸" * 240, "count": 20,
+                 "revision": "0" * 16,
+                 "incidents": [{"training_start": report()["training_start"]}] * 20}
+                for ident in range(1, 13)]
+        text, markup = bot.violations_page(self.config, rows)
+        self.assertLessEqual(len(text.encode("utf-16-le")) // 2, 3500)
+        self.assertEqual(len(markup["inline_keyboard"]), 6)
+        self.assertIn("1/3", text)
+        text, _ = bot.violations_page(self.config, rows, 999999)
+        self.assertIn("3/3", text)
+
+    def test_empty_register_and_corrupt_register_have_clear_responses(self):
+        api = self.handle(update(text="/violations"))
+        self.assertIn("Список пуст", api.send.call_args.args[1])
+        path = ViolationRegistry(self.config).path
+        sportsite.atomic_write(path, "bad json")
+        api = self.handle(update(text="/violations"))
+        self.assertIn("не перезаписаны", api.send.call_args.args[1])
 
 
 class PairingTests(TemporaryProject):

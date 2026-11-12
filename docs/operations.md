@@ -79,6 +79,12 @@ were first enabled; historical snapshots are not broadcast on installation.
 
 ## Restart or update
 
+In Telegram, send `/violations` to view the late cancellation register and use
+the 🗑 buttons to clear a person's current cases. The list is updated by final
+`/check` reports, not by a separate website poll. Existing final reports are
+included when the register is opened. Deletions survive runtime updates as long
+as `.state/violations.json` is retained.
+
 Restart the installed workers after editing the active configuration:
 
 ```sh

@@ -133,6 +133,7 @@ class ScheduleTests(TemporaryProject):
             deployed = sportsite.deploy_runtime(self.config, self.root / "config.json")
         self.assertEqual(deployed.root, destination.resolve())
         self.assertTrue((destination / "sportsite.py").is_file())
+        self.assertTrue((destination / "violation_registry.py").is_file())
         self.assertEqual(json.loads(deployed.auth_path.read_text()),
                          json.loads(self.config.auth_path.read_text()))
         self.assertEqual(deployed.auth_path.stat().st_mode & 0o777, 0o600)

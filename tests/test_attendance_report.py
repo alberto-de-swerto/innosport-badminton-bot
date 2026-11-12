@@ -7,6 +7,7 @@ from unittest import mock
 
 import attendance_report as reporting
 import sportsite
+from violation_registry import ViolationRegistry
 from test_sportsite import TemporaryProject, START, DUE, EVENT, PEOPLE, GRADES, DETAIL, fake_connection
 
 
@@ -40,6 +41,7 @@ class ReportTests(TemporaryProject):
         self.assertFalse(result["preliminary"])
         api.attendance.assert_called_once()
         output = reporting.save_report(self.config, result)
+        self.assertEqual(ViolationRegistry(self.config).rows()[0]["student_id"], PEOPLE[1]["student_id"])
         self.assertEqual((output / "report.json").stat().st_mode & 0o777, 0o600)
         self.assertEqual((output / "report.txt").stat().st_mode & 0o777, 0o600)
         self.assertEqual((path / "snapshot.json").read_bytes(), original)

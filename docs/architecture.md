@@ -52,6 +52,11 @@ delivery journal records a snapshot digest and progress through message parts.
 Retries resume from the first unconfirmed part. A lost acknowledgement after
 server acceptance can still result in a duplicate; delivery is not exactly once.
 
+The worker also accepts inline button callbacks, with the same private-chat and
+owner checks as text commands. Callback data contains stable student IDs and a
+digest of the currently listed cases, rather than names or positions in a table.
+A stale removal button refreshes the list without dismissing newer cases.
+
 ## Attendance comparison
 
 `attendance_report.py` selects the most recent started session, or an explicitly
@@ -63,6 +68,19 @@ manual export. An explicitly user-provided historical list can be stored as a
 labelled `user_import` with separate reference and import times. This does not
 change the original job's missed status. There is no screenshot OCR importer;
 such input must be transcribed and identities verified separately.
+
+## Late cancellation register
+
+`violation_registry.py` consumes completed comparisons of scheduled snapshots.
+Cases are keyed by group, session, and student ID. The latest comparison replaces
+the session's cases, so repeated checks do not increase counts and corrected
+attendance removes outdated cases. Existing final reports are backfilled on
+`/violations`; preliminary and user-imported reports are excluded.
+
+The register uses a separate file lock and atomic JSON writes. Removing a person
+dismisses their current cases and retains identifier-only tombstones, preventing
+rechecks or backfills from resurrecting them. New sessions remain eligible.
+Neither dismissal nor backfill modifies snapshots, source reports, or the site.
 
 The comparison cannot reconstruct a cancellation timeline, identify who removed
 a booking, or establish physical presence independently of saved hours.

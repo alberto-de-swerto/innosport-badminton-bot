@@ -195,6 +195,8 @@ def text_report(report: dict) -> str:
 
 
 def save_report(config: Config, report: dict) -> Path:
+    from violation_registry import ViolationRegistry
+
     start, checked = parse_datetime(report["training_start"]), parse_datetime(report["checked_at"])
     directory = config.root / "reports" / (config.job_key(start) + "_training-%s_check_%s" % (
         report["training_id"], checked.strftime("%Y%m%dT%H%M%S%f")))
@@ -202,4 +204,5 @@ def save_report(config: Config, report: dict) -> Path:
     private_dir(directory)
     write_json(directory / "report.json", report)
     atomic_write(directory / "report.txt", text_report(report) + "\n")
+    ViolationRegistry(config).record(report)
     return directory

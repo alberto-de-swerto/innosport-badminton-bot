@@ -13,6 +13,7 @@ Built around a real coordination problem at [Innopolis University](https://sport
 - **Scheduled snapshots** of Beginners registrations, saved locally as CSV and JSON with the actual capture time.
 - **Automatic Telegram notifications** after a successful scheduled export, including every registered participant's name.
 - **Attendance comparisons** through `/check`, after the leader saves attendance hours on the website.
+- **Late cancellation register** with per-person counts, session dates, and removal buttons in Telegram.
 - **Interactive SSO sign-in** with a reusable local session. Passwords are entered only on the university login page.
 - **Independent background workers** for exports and Telegram, installed as macOS LaunchAgents.
 - **Optional VPN handling** through macOS network profiles or Shortcuts, with restoration after requests and recovery after interruption.
@@ -112,10 +113,28 @@ The example uses `Europe/Moscow` and a 60-minute lead time. All entries are conf
 | --- | --- |
 | `/check` | Compare the most recent session that has started |
 | `/check YYYY-MM-DD` | Compare a specific session |
+| `/violations` | Show possible late cancellations, counts, dates, and removal buttons |
 | `/status` | Show recent snapshot jobs and the next scheduled capture |
 | `/help` | Show usage instructions |
 
 Save attendance hours on the sports website before calling `/check`. Automatic roster notifications require no command.
+
+After a completed session, `/check` updates a private local register of people who
+were in the scheduled snapshot but disappeared without receiving hours. Open
+`/violations` to see names, counts, and dates; use the arrow buttons to change pages.
+Existing saved final reports are included automatically. Preliminary comparisons
+and historical tests based on screenshots are excluded.
+
+Each person counts once per session. A later `/check` replaces that session's
+result, so correcting attendance removes an outdated case. The 🗑 button clears
+all currently listed cases for that person. Rechecking or restarting will not
+restore those cases; a cancellation at a new session can add the person again.
+An old button cannot clear cases added since it was displayed: the bot refreshes
+the list and asks you to use the updated button.
+
+The register is stored in `.state/violations.json` with a file lock and atomic
+writes. It is excluded from Git. Removing a register entry does not change the
+original snapshots, comparison reports, website registrations, or attendance hours.
 
 ## Engineering choices
 
@@ -135,7 +154,7 @@ Save attendance hours on the sports website before calling `/check`. Automatic r
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
-The tests use fictional people, mocked VPN commands, and a local HTTP server. They cover scheduling, SSO/session failures, token transport, atomic exports, missed deadlines, report categories, Telegram pairing and authorization, notification retries, and restart recovery. They do not need real credentials, a Telegram account, or a browser download.
+The tests use fictional people, mocked VPN commands, and a local HTTP server. They cover scheduling, SSO/session failures, token transport, atomic exports, missed deadlines, report categories, Telegram pairing and authorization, notification retries, restart recovery, register corrections, durable dismissals, callback authorization, stale buttons, and concurrent register writes. They do not need real credentials, a Telegram account, or a browser download.
 
 GitHub Actions runs the suite on Linux with Python 3.11 and 3.13. Native macOS integration is tested separately; CI does not validate your VPN, SSO account, or local LaunchAgents.
 
@@ -154,6 +173,7 @@ GitHub Actions runs the suite on Linux with Python 3.11 and 3.13. Native macOS i
 sportsite.py              API access, SSO, exports, scheduler, and CLI
 telegram_bot.py           Private bot, commands, and roster notifications
 attendance_report.py      Baseline validation and attendance comparison
+violation_registry.py     Local late cancellation counts and durable dismissals
 vpn_control.py            Optional macOS VPN pause and recovery
 api_auth.py               Optional personal InNoHassle token support
 config.example.json       Shareable configuration template
