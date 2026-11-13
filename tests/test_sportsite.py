@@ -429,7 +429,7 @@ class APITests(TemporaryProject):
         update = {"update_id": 1, "message": {"chat": {"id": 77, "type": "private"},
                   "from": {"id": 77, "is_bot": False}, "date": 100, "text": "/check 2026-11-05"}}
         telegram_bot.handle_update(self.config, settings, api, update, now=100,
-                                  reporter=lambda config, day, language="ru": attendance_report.text_report(report, language))
+                                  reporter=lambda config, day, language="ru", actor=None: attendance_report.text_report(report, language))
         sent = api.send.call_args.args[1]
         self.assertIn("Вымышленный Игрок", sent)
         self.assertIn("2 ч", sent)

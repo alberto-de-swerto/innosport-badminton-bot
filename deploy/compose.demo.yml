@@ -1,0 +1,44 @@
+name: innosport-demo
+x-demo: &demo
+  environment:
+    INNOSPORT_DATABASE_URL: postgresql+psycopg://demo:${DEMO_DB_PASSWORD:?set DEMO_DB_PASSWORD}@db:5432/demo
+  depends_on:
+    db:
+      condition: service_healthy
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:size=32m,mode=1777
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  stop_grace_period: 10s
+services:
+  db:
+    image: postgres:16-bookworm@sha256:a49f7438ba03589f9b1ca062f2da82e899b48ea1dc50d2449fa09a70be83ebca
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_DB: demo
+      POSTGRES_PASSWORD: ${DEMO_DB_PASSWORD:?set DEMO_DB_PASSWORD}
+    volumes:
+      - demo-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U demo -d demo"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  blue:
+    <<: *demo
+    image: ${BLUE_IMAGE:?set BLUE_IMAGE}
+  green:
+    <<: *demo
+    image: ${GREEN_IMAGE:?set GREEN_IMAGE}
+  gateway:
+    image: nginx:stable-alpine@sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-8080}:8080"
+    volumes:
+      - ${DEPLOY_STATE_DIR:?set DEPLOY_STATE_DIR}/nginx:/etc/nginx/conf.d:ro
+    restart: unless-stopped
+volumes:
+  demo-postgres:

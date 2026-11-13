@@ -196,7 +196,7 @@ def text_report(report: dict, language="ru") -> str:
     return "\n".join(lines)
 
 
-def save_report(config: Config, report: dict) -> Path:
+def save_report(config: Config, report: dict, actor="system:report") -> Path:
     from violation_registry import ViolationRegistry
 
     start, checked = parse_datetime(report["training_start"]), parse_datetime(report["checked_at"])
@@ -206,5 +206,5 @@ def save_report(config: Config, report: dict) -> Path:
     private_dir(directory)
     write_json(directory / "report.json", report)
     atomic_write(directory / "report.txt", text_report(report) + "\n")
-    ViolationRegistry(config).record(report)
+    ViolationRegistry(config, actor=actor).record(report)
     return directory

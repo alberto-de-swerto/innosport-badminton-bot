@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import secrets
+import threading
 
 from sportsite import DataError, parse_datetime, positive_id, private_dir, write_json
 
@@ -63,18 +64,43 @@ def report_session(report, allow_import=False):
 
 
 class ViolationRegistry:
-    def __init__(self, config):
+    def __init__(self, config, actor="system", request_id=None, reason=None):
         self.config = config
         self.path = config.root / ".state" / "violations.json"
+        self.actor, self.request_id = actor, request_id
+        self.reason = reason
+        self._local = threading.local()
+        self.database = None
+        if config.registry_backend == "postgresql":
+            from registry_database import RegistryDatabase
+            self.database = RegistryDatabase(config)
 
     @contextmanager
     def locked(self):
+        if self.database is not None:
+            with self.database.transaction() as connection:
+                self._local.connection = connection
+                try:
+                    yield
+                finally:
+                    self._local.connection = None
+            return
         private_dir(self.path.parent)
         with (self.path.parent / "violations.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             yield
 
     def load(self):
+        if self.database is not None:
+            connection = getattr(self._local, "connection", None)
+            if connection is None:
+                with self.locked():
+                    return self.load()
+            return self.database.load(connection)
+        return self.load_json()
+
+    def load_json(self):
+        """Legacy input remains readable for explicit migration and recovery."""
         try:
             state = json.loads(self.path.read_text(encoding="utf-8"))
             if (state["schema_version"] != 1 or not isinstance(state["sessions"], dict)
@@ -122,6 +148,19 @@ class ViolationRegistry:
         except (OSError, ValueError, KeyError, TypeError, AttributeError, DataError):
             raise DataError("Не удалось прочитать журнал поздних отмен. Данные не перезаписаны.") from None
 
+    def save(self, state, kind, reason, metadata=None, request_id=None):
+        if self.database is None:
+            write_json(self.path, state)
+        else:
+            self.database.save(self._local.connection, state, actor=self.actor, kind=kind,
+                               reason=self.reason or reason, metadata=metadata or {},
+                               request_id=request_id or self.request_id)
+
+    def audit(self, limit=10):
+        if self.database is None:
+            return []
+        return self.database.audit(limit)
+
     @staticmethod
     def merge(state, session):
         key = session_key(session)
@@ -140,7 +179,7 @@ class ViolationRegistry:
         with self.locked():
             state = self.load()
             if self.merge(state, session):
-                write_json(self.path, state)
+                self.save(state, "report", "Attendance comparison saved", {"session_keys": [session_key(session)]})
 
     def confirm_import(self, report, student_id):
         """Approve one known screenshot case without relabelling its source as automatic."""
@@ -160,7 +199,7 @@ class ViolationRegistry:
                     ("training_id", "group_id", "training_start", "checked_at")}
             state["confirmed_cases"][key] = dict(case, person=person, source="confirmed_import",
                                                 confirmed_at=self.config.now().isoformat())
-            write_json(self.path, state)
+            self.save(state, "confirm_import", "Screenshot case explicitly confirmed", {"incident_key": key})
 
     def sync_history(self):
         """Backfill old final reports; latest comparison wins and dismissals stay dismissed."""
@@ -178,7 +217,7 @@ class ViolationRegistry:
             for session in sessions:
                 changed = self.merge(state, session) or changed
             if changed:
-                write_json(self.path, state)
+                self.save(state, "backfill", "Saved final reports imported")
 
     @staticmethod
     def people(state):
@@ -249,7 +288,9 @@ class ViolationRegistry:
             state["dismissed"] = sorted(dismissed)
             for key in keys:
                 state["confirmed_cases"].pop(key, None)
-            write_json(self.path, state)
+            self.save(state, "dismiss" if clear else "decrement",
+                      "Owner cleared all current cases" if clear else "Owner forgave the oldest case",
+                      {"action_id": state["undo_history"][-1]["id"], "incident_keys": sorted(keys)})
             remaining = person["count"] - len(incidents)
             if clear:
                 return "Удалено из журнала: %s. Новые отмены будут учитываться." % person["count"]
@@ -296,5 +337,6 @@ class ViolationRegistry:
             if request_id:
                 state["undo_results"][request_id] = answer
                 state["undo_results"] = dict(list(state["undo_results"].items())[-50:])
-            write_json(self.path, state)
+            self.save(state, "undo", "Owner undid the latest counter edit",
+                      {"action_id": action["id"], "restored": restored, "corrected": corrected}, request_id)
             return answer

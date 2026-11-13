@@ -13,6 +13,8 @@ Copy `config.example.json` to `config.json`. The local file is ignored by Git.
 | `poll_seconds` | Scheduler polling interval; the next capture boundary can shorten it |
 | `training_duration_minutes` | Fallback practice duration, 90 by default; a saved calendar end takes precedence |
 | `reminder_delay_minutes` | Minutes after practice to remind the owner, 15 by default; 0–180 allowed |
+| `registry_backend` | `json` by default; `postgresql` only after explicit verified migration |
+| `registry_dataset` | `live` by default; isolated fictional demo uses `demo` |
 | `schedule` | Weekday and start time pairs, with Monday `0` and Sunday `6` |
 | `vpn_control.enabled` | Whether to pause registered macOS VPNs during sports-site requests |
 

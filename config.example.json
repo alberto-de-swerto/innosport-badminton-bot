@@ -8,6 +8,8 @@
   "poll_seconds": 10,
   "training_duration_minutes": 90,
   "reminder_delay_minutes": 15,
+  "registry_backend": "json",
+  "registry_dataset": "live",
   "vpn_control": {
     "enabled": false
   },

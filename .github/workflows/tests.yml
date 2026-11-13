@@ -32,3 +32,117 @@ jobs:
         run: python -m pip check
       - name: Run tests with fictional data
         run: python -m unittest discover -s tests -v
+
+  postgres:
+    name: PostgreSQL integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16-bookworm@sha256:a49f7438ba03589f9b1ca062f2da82e899b48ea1dc50d2449fa09a70be83ebca
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: innosport_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U test -d innosport_test"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      INNOSPORT_TEST_DATABASE_URL: postgresql+psycopg://test:test-only-password@127.0.0.1:5432/innosport_test
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -p 'test_registry_database.py' -v
+
+  container:
+    name: Demo image and rollback tests
+    needs: [test, postgres]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Build the release once
+        env:
+          REVISION: ${{ github.sha }}
+        run: docker build -f Dockerfile.demo --build-arg APP_REVISION="$REVISION" -t innosport-demo:tested .
+      - name: Test promotion and both rollback paths
+        run: bash scripts/test_deployment.sh innosport-demo:tested
+      - name: Publish the tested image by commit and digest
+        id: publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${OWNER,,}/innosport-badminton-demo:$REVISION"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$OWNER" --password-stdin
+          docker tag innosport-demo:tested "$image"
+          docker push "$image"
+          digest=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
+          printf 'image=%s\n' "$digest" >> "$GITHUB_OUTPUT"
+          printf 'Published tested image: `%s`\n' "$digest" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy demo server
+    needs: container
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && vars.DEMO_HOST != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: demo
+    concurrency:
+      group: innosport-demo-deployment
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      DEMO_HOST: ${{ vars.DEMO_HOST }}
+      DEMO_USER: ${{ vars.DEMO_USER }}
+      DEMO_DIR: ${{ vars.DEMO_DIR }}
+      IMAGE: ${{ needs.container.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Reject an outdated deployment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPOSITORY: ${{ github.repository }}
+          EXPECTED_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          current=$(gh api "repos/$REPOSITORY/git/ref/heads/main" --jq '.object.sha')
+          [[ "$current" == "$EXPECTED_REVISION" ]] || { echo 'A newer main commit exists; deployment stopped.'; exit 1; }
+      - name: Configure SSH with pinned server identity
+        env:
+          SSH_KEY: ${{ secrets.DEMO_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEMO_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ "$DEMO_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$DEMO_USER" =~ ^[a-z_][a-z0-9_-]*$ ]]
+          [[ "$DEMO_DIR" =~ ^/[a-zA-Z0-9_/-]+$ && -n "$IMAGE" ]]
+          test -n "$SSH_KEY" && test -n "$KNOWN_HOSTS"
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+      - name: Transfer release tooling and deploy the immutable image
+        run: |
+          set -euo pipefail
+          target="$DEMO_USER@$DEMO_HOST"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "mkdir -p '$DEMO_DIR/deploy' '$DEMO_DIR/scripts'"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes deploy/compose.demo.yml deploy/probe.py "$target:$DEMO_DIR/deploy/"
+          scp -o BatchMode=yes -o StrictHostKeyChecking=yes scripts/deploy_demo.sh "$target:$DEMO_DIR/scripts/"
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes "$target" "cd '$DEMO_DIR' && bash scripts/deploy_demo.sh '$IMAGE'"
+      - name: Remove temporary SSH key
+        if: always()
+        run: rm -f ~/.ssh/id_ed25519

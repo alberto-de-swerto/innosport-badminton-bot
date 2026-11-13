@@ -26,6 +26,7 @@ htmlcov/
 .ruff_cache/
 .idea/
 .vscode/
+deploy/.state*/
 build/
 dist/
 *.egg-info/

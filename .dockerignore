@@ -1,0 +1,16 @@
+# Allowlist: private runtime files can never enter the build context.
+*
+!Dockerfile.demo
+!requirements.txt
+!sportsite.py
+!attendance_report.py
+!violation_registry.py
+!registry_database.py
+!registry_admin.py
+!i18n.py
+!demo_app.py
+!config.example.json
+!migrations/
+!migrations/**
+migrations/**/__pycache__/
+migrations/**/*.pyc

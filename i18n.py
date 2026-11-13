@@ -11,6 +11,7 @@ HELP_RU = ("🏸 Бадминтон · Beginners\n\n"
            "/undo — отменить последнее списание или удаление\n"
            "/status — состояние снимков и ближайшая выгрузка\n"
            "/language — русский / English\n"
+           "/history — последние изменения счётчиков\n"
            "/help — эта справка\n\n"
            "После успешной плановой выгрузки автоматически приходит список записавшихся.\n\n"
            "Перед /check сохрани посещаемость и часы на спортсайте. "
@@ -22,12 +23,28 @@ HELP_EN = ("🏸 Badminton · Beginners\n\n"
            "/undo — undo the latest counter decrease or removal\n"
            "/status — snapshots and the next scheduled export\n"
            "/language — English / русский\n"
+           "/history — recent counter changes\n"
            "/help — this help message\n\n"
            "After each successful scheduled export, the bot sends the saved roster automatically.\n\n"
            "Save attendance hours on the sports website before /check. "
            "The command only reads data; it does not change hours or registrations on the website.")
 
 EN = {
+    "История изменений счётчиков": "Counter change history",
+    "История действий доступна после переноса журнала в PostgreSQL.": "Action history is available after migrating the register to PostgreSQL.",
+    "🕒 Последние изменения счётчиков": "🕒 Recent counter changes",
+    "Перенос из JSON": "JSON migration", "Сверка посещаемости": "Attendance comparison",
+    "Импорт сохранённых отчётов": "Saved report import", "Подтверждение скриншота": "Screenshot confirmation",
+    "Списание одного случая": "One case forgiven", "Обнуление счётчика": "Counter cleared",
+    "Отмена действия": "Action undone", "Автор: %s": "Actor: %s", "Причина: %s": "Reason: %s",
+    "История пока пуста.": "No history yet.",
+    "Сохранена сверка посещаемости": "Attendance comparison saved",
+    "Внесены сохранённые итоговые отчёты": "Saved final reports imported",
+    "Случай со скриншота подтверждён вручную": "Screenshot case explicitly confirmed",
+    "Владелец списал все текущие случаи": "Owner cleared all current cases",
+    "Владелец списал самый ранний случай": "Owner forgave the oldest case",
+    "Владелец отменил последнее изменение счётчика": "Owner undid the latest counter edit",
+    "Перенесён JSON; авторы старых действий неизвестны": "Imported existing JSON; authors of historical edits are unknown",
     "Сравнить снимок записи и посещаемость": "Compare the saved roster and attendance",
     "Поздние отмены и удаление из журнала": "Late cancellations and register controls",
     "Отменить последнее списание или удаление": "Undo the latest counter decrease or removal",

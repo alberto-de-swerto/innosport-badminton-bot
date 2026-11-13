@@ -47,6 +47,19 @@ Request errors are sanitized because raw HTTP client errors can include cookies,
 authorization headers, or Telegram token-bearing URLs. Authentication and schema
 failures do not become empty successful exports.
 
+PostgreSQL connection settings are private. Database audit rows contain names,
+actor IDs, reasons and case identifiers, and remain after counters are cleared.
+They are append-only through the application, not tamper-proof against database
+administrators. The original JSON is retained during migration; protect it and
+database backups equally. A database failure never silently selects stale JSON.
+
+The public demo uses a separate, explicitly marked fictional database and refuses
+a live database. The live backend also refuses a demo database. The image build
+uses a source allowlist. Only the read-only demo is published; real credentials,
+rosters and Telegram state are not shipped. Demo and bot databases must remain
+separate. SSH deployment requires a preverified host key; keys are not discovered
+and trusted automatically during the workflow.
+
 ## VPN behavior
 
 VPN control is disabled in the example configuration. If enabled, it can change

@@ -88,6 +88,13 @@ such input must be transcribed and identities verified separately.
 
 ## Late cancellation register
 
+The domain operations can use the original locked JSON repository or a PostgreSQL
+repository. PostgreSQL stores normalized session/case, dismissal and undo tables,
+with Alembic schema revisions and a verified one-time legacy import. A row lock on
+the registry metadata serializes changes across processes/hosts; state and an
+actor-attributed audit event commit together. PostgreSQL failure never falls back
+to the preserved JSON. See [database design and migration](postgresql.md).
+
 `violation_registry.py` consumes completed comparisons of scheduled snapshots.
 Cases are keyed by group, session, and student ID. The latest comparison replaces
 the session's cases, so repeated checks do not increase counts and corrected
@@ -113,6 +120,15 @@ history existed cannot be undone from the new command.
 
 The comparison cannot reconstruct a cancellation timeline, identify who removed
 a booking, or establish physical presence independently of saved hours.
+
+## Demo releases
+
+The fictional demo uses the same domain/repository code behind a read-only HTTP
+interface, with dataset markers separating it from the live register. CI tests
+blue/green promotion and failures both before and after switching the Nginx
+gateway, then publishes the exact tested image. Optional SSH deployment uses an
+immutable image digest and retains the previous slot for rollback. See
+[demo deployment](demo-deployment.md).
 
 ## VPN recovery
 

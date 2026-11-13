@@ -95,11 +95,16 @@ Use `/undo` or the undo button to restore the last counter edit, including a ful
 removal. It supports the latest 20 edits recorded since the update was installed.
 New violations and website corrections are preserved when undoing an edit.
 
-The same local register file contains counters, approved screenshot cases,
+For the default JSON backend, the same local register file contains counters, approved screenshot cases,
 dismissals, and undo history. Preserve it when moving or reinstalling the runtime.
 Saved source reports live in `reports/`, and original rosters in `exports/`.
 These local files are excluded from GitHub. Keeping them only on this Mac does
 not provide recovery from loss of the Mac or its drive.
+
+With PostgreSQL, the live register, undo and audit history are in the database;
+the old JSON is only the migration backup. Use `/history` for the latest 10 events.
+Preserve a database backup in addition to local reports/exports. See
+[migration and recovery](postgresql.md) and [demo release operations](demo-deployment.md).
 
 Restart the installed workers after editing the active configuration:
 

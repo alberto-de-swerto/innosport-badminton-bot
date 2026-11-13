@@ -21,7 +21,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from attendance_report import display_name, load_baseline, text_report
 from sportsite import (Config, INSTALL_ROOT, ROOT, SportError, atomic_write,
-                       parse_datetime, private_dir, write_json)
+                       deploy_migrations, parse_datetime, private_dir, write_json)
 from violation_registry import ViolationRegistry
 from bot_notifications import ServiceNotifications
 from i18n import (HELP_RU, LANGUAGES, error_text, help_text, language_of,
@@ -36,6 +36,7 @@ BOT_COMMANDS = [
     {"command": "undo", "description": "Отменить последнее списание или удаление"},
     {"command": "status", "description": "Снимки и ближайшая выгрузка"},
     {"command": "language", "description": "Язык сообщений"},
+    {"command": "history", "description": "История изменений счётчиков"},
     {"command": "help", "description": "Как пользоваться ботом"},
 ]
 HELP = HELP_RU
@@ -317,9 +318,10 @@ def setup(config):
     print("Готово. Бот работает в фоне и запускается при входе в macOS. Mac должен быть включён и не спать.")
 
 
-def run_report(config, requested_date=None, language="ru"):
+def run_report(config, requested_date=None, language="ru", actor="system:report"):
     args = [sys.executable, str(ROOT / "sportsite.py"), "--config", str(config.root / "config.json"),
             "report", "--json"]
+    args.extend(["--actor", actor])
     if requested_date:
         args.extend(["--date", requested_date.isoformat()])
     process = None
@@ -435,6 +437,38 @@ def show_language(settings, api, notice=None):
     api.send(settings["chat_id"], text, reply_markup={"inline_keyboard": keyboard})
 
 
+def history_text(config, language="ru"):
+    _ = lambda text: tr(text, language)
+    registry = ViolationRegistry(config)
+    if registry.database is None:
+        return _("История действий доступна после переноса журнала в PostgreSQL.")
+    rows = registry.audit(10)
+    lines = [_("🕒 Последние изменения счётчиков"), ""]
+    kinds = {"legacy_import": "Перенос из JSON", "report": "Сверка посещаемости",
+             "backfill": "Импорт сохранённых отчётов", "confirm_import": "Подтверждение скриншота",
+             "decrement": "Списание одного случая", "dismiss": "Обнуление счётчика", "undo": "Отмена действия"}
+    reasons = {"Attendance comparison saved": "Сохранена сверка посещаемости",
+               "Saved final reports imported": "Внесены сохранённые итоговые отчёты",
+               "Screenshot case explicitly confirmed": "Случай со скриншота подтверждён вручную",
+               "Owner cleared all current cases": "Владелец списал все текущие случаи",
+               "Owner forgave the oldest case": "Владелец списал самый ранний случай",
+               "Owner undid the latest counter edit": "Владелец отменил последнее изменение счётчика",
+               "Imported existing JSON; authors of historical edits are unknown": "Перенесён JSON; авторы старых действий неизвестны"}
+    for event in rows:
+        lines.append("%s · %s" % (parse_datetime(event["occurred_at"]).strftime("%d.%m %H:%M"),
+                                  _(kinds.get(event["kind"], event["kind"]))))
+        lines.append(_("Автор: %s") % event["actor"])
+        lines.append(_("Причина: %s") % _(reasons.get(event["reason"], event["reason"])))
+        for change in event["changes"][:5]:
+            lines.append("• %s: %s → %s" % (change["full_name"], change["before"], change["after"]))
+        if len(event["changes"]) > 5:
+            lines.append(_(" · ещё %s") % (len(event["changes"]) - 5))
+        lines.append("")
+    if not rows:
+        lines.append(_("История пока пуста."))
+    return "\n".join(lines)
+
+
 def change_language(config, settings, api, language):
     if language not in LANGUAGES:
         raise TelegramError("Формат: /language, /language ru или /language en.")
@@ -484,12 +518,12 @@ def handle_callback(config, settings, api, callback):
     try:
         notice = None
         if match["student"]:
-            registry = ViolationRegistry(config)
+            registry = ViolationRegistry(config, actor="telegram:%s" % settings["user_id"], request_id="callback:" + callback["id"])
             registry.sync_history()
             operation = registry.decrement if match["action"] == "dec" else registry.dismiss
             notice = operation(int(match["student"]), match["revision"])
         elif match["undo"]:
-            registry = ViolationRegistry(config)
+            registry = ViolationRegistry(config, actor="telegram:%s" % settings["user_id"])
             registry.sync_history()
             notice = registry.undo(expected_id=match["undo"], request_id="callback:" + callback["id"])
         show_violations(config, settings, api, int(match["page"] or match["return_page"] or 0), message=message, notice=notice)
@@ -530,6 +564,11 @@ def handle_update(config, settings, api, update, reporter=run_report, now=None):
     elif command == "/status":
         api.send(settings["chat_id"], status_text(config, language))
         LOG.info("Telegram: ответ /status отправлен.")
+    elif command == "/history":
+        try:
+            api.send(settings["chat_id"], history_text(config, language))
+        except SportError as exc:
+            api.send(settings["chat_id"], "⚠️ " + error_text(exc, language))
     elif command == "/language":
         if len(parts) == 1:
             show_language(settings, api)
@@ -554,7 +593,7 @@ def handle_update(config, settings, api, update, reporter=run_report, now=None):
             api.send(settings["chat_id"], _("Отправь /undo без параметров — отменить последнее списание или удаление."))
             return
         try:
-            registry = ViolationRegistry(config)
+            registry = ViolationRegistry(config, actor="telegram:%s" % settings["user_id"])
             registry.sync_history()
             answer = registry.undo(request_id="update:" + str(update["update_id"]))
             show_violations(config, settings, api, notice=answer)
@@ -571,7 +610,7 @@ def handle_update(config, settings, api, update, reporter=run_report, now=None):
             return
         api.send(settings["chat_id"], _("🔎 Сравниваю исходный список с сохранёнными на сайте часами…"))
         try:
-            answer = reporter(config, requested_date, language=language)
+            answer = reporter(config, requested_date, language=language, actor="telegram:%s" % settings["user_id"])
         except SportError as exc:
             answer = "⚠️ " + error_text(exc, language)
         api.send(settings["chat_id"], answer)
@@ -632,10 +671,12 @@ def install_listener(config):
     # Use the same protected runtime as the snapshot agent, with an independent listener.
     private_dir(INSTALL_ROOT)
     for name in ("sportsite.py", "attendance_report.py", "telegram_bot.py", "vpn_control.py", "api_auth.py",
-                 "violation_registry.py", "bot_notifications.py", "i18n.py"):
+                 "violation_registry.py", "registry_database.py", "registry_admin.py",
+                 "bot_notifications.py", "i18n.py", "requirements.txt"):
         source, target = ROOT / name, INSTALL_ROOT / name
         if source.resolve() != target.resolve():
             atomic_write(target, source.read_text(encoding="utf-8"))
+    deploy_migrations(INSTALL_ROOT)
     if config.root.resolve() != INSTALL_ROOT.resolve():
         raise TelegramError("Сначала установи автозапуск основного скрипта через install-autostart, затем повтори подключение бота.")
     private_dir(config.root / "logs")

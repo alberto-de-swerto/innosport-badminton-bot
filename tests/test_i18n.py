@@ -108,7 +108,7 @@ class LanguageTests(TemporaryProject):
             self.assertIn(expected, self.api.send.call_args.args[1])
         reporter = mock.Mock(side_effect=sportsite.AuthError("Сессия истекла"))
         bot.handle_update(self.config, self.settings, self.api, update(), reporter=reporter, now=NOW)
-        reporter.assert_called_once_with(self.config, None, language="en")
+        reporter.assert_called_once_with(self.config, None, language="en", actor="telegram:77")
         self.assertIn("website session expired", self.api.send.call_args.args[1])
         self.assertNotRegex(i18n.error_text(sportsite.DataError("Неизвестный формат"), "en"), r"[А-Яа-яЁё]")
 

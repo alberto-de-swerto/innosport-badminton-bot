@@ -19,8 +19,10 @@ Built around a real coordination problem at [Innopolis University](https://sport
 - **Independent background workers** for exports and Telegram, installed as macOS LaunchAgents.
 - **Optional VPN handling** through macOS network profiles or Shortcuts, with restoration after requests and recovery after interruption.
 - **Persistent state and atomic writes** for retries, restart recovery, and distinguishing missed jobs from successful snapshots.
+- **Optional PostgreSQL register**, verified JSON migration, transactional counter edits and actor-attributed audit history.
+- **Fictional portfolio demo** with a container image, blue/green releases, smoke checks and tested rollback.
 
-This is an independent club tool, not an official university service. The website account must already have permission to view the group's participants. User-facing messages are currently in Russian.
+This is an independent club tool, not an official university service. The website account must already have permission to view the group's participants. Bot messages support Russian and English.
 
 ## Example
 
@@ -118,6 +120,7 @@ The example uses `Europe/Moscow` and a 60-minute lead time. All entries are conf
 | `/undo` | Undo the latest counter decrease or full removal |
 | `/status` | Show recent snapshot jobs and the next scheduled capture |
 | `/language` | Choose Russian or English for bot messages |
+| `/history` | Show the last 10 register changes, actors and count deltas (PostgreSQL) |
 | `/help` | Show usage instructions |
 
 Save attendance hours on the sports website before calling `/check`. Automatic roster notifications require no command.
@@ -153,8 +156,11 @@ edits made after this feature is installed can be undone, newest first. Undo
 restores individual cases, preserving new cases and newer website corrections.
 Retrying delivery of the same command does not undo an extra edit.
 
-The register is stored in `.state/violations.json` with a file lock and atomic
-writes. It is excluded from Git. Removing a register entry does not change the
+The default register is stored in `.state/violations.json` with a file lock and atomic
+writes. PostgreSQL is enabled through an explicit migration; it stores cases,
+dismissals, undo history and an audit trail in one transaction. See
+[PostgreSQL setup and migration](docs/postgresql.md). Private data is excluded
+from Git. Removing a register entry does not change the
 original snapshots, comparison reports, website registrations, or attendance hours.
 
 ## Reminders and problem alerts
@@ -203,6 +209,12 @@ The tests use fictional people, mocked VPN commands, and a local HTTP server. Th
 
 GitHub Actions runs the suite on Linux with Python 3.11 and 3.13. Native macOS integration is tested separately; CI does not validate your VPN, SSO account, or local LaunchAgents.
 
+An additional CI job runs real PostgreSQL integration tests. Container tests promote
+two demo revisions and exercise rollback before and after traffic switches. Successful
+`main` builds publish the exact tested demo image to GHCR. SSH deployment is enabled
+only after a demo server is configured; no server is assumed or provisioned.
+See [demo releases and deployment](docs/demo-deployment.md).
+
 ## Limitations
 
 - The website exposes current registrations and attendance marks, not a complete cancellation history. Cancel-and-rejoin events and cancellations by people with positive hours cannot be identified from this table. The client also cannot tell who removed a registration.
@@ -219,6 +231,12 @@ sportsite.py              API access, SSO, exports, scheduler, and CLI
 telegram_bot.py           Private bot, commands, and roster notifications
 attendance_report.py      Baseline validation and attendance comparison
 violation_registry.py     Local late cancellation counts and durable dismissals
+registry_database.py      PostgreSQL tables, transactions and audit events
+registry_admin.py         Verified JSON migration and private administration
+migrations/              Versioned Alembic schema migrations
+demo_app.py               Read-only fictional demo and readiness endpoints
+deploy/                   Compose stack, release smoke checks and configuration
+scripts/                  Blue/green deployment and real rollback regression
 bot_notifications.py      Post-practice reminders and export problem alerts
 i18n.py                   Russian/English bot messages and language helpers
 vpn_control.py            Optional macOS VPN pause and recovery

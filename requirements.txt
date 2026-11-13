@@ -1,1 +1,4 @@
 playwright==1.60.0
+SQLAlchemy==2.0.57
+alembic==1.16.5
+psycopg[binary]==3.2.13

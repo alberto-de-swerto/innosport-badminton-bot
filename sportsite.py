@@ -134,6 +134,8 @@ class Config:
     vpn_control: dict = field(default_factory=dict)
     training_duration_minutes: int = 90
     reminder_delay_minutes: int = 15
+    registry_backend: str = "json"
+    registry_dataset: str = "live"
 
     @classmethod
     def load(cls, path: Path) -> "Config":
@@ -170,6 +172,12 @@ class Config:
             if not raw["title_pattern"].strip():
                 raise ValueError("title_pattern не должен быть пустым")
             vpn = raw.get("vpn_control", {"enabled": False})
+            backend = raw.get("registry_backend", "json")
+            if backend not in ("json", "postgresql"):
+                raise ValueError("registry_backend: json или postgresql")
+            dataset = raw.get("registry_dataset", "live")
+            if dataset not in ("live", "demo"):
+                raise ValueError("registry_dataset: live или demo")
             if not isinstance(vpn, dict) or type(vpn.get("enabled", False)) is not bool:
                 raise ValueError("vpn_control.enabled должен быть true или false")
             if any(vpn.get(key) for key in ("connect_shortcut", "disconnect_shortcut", "shortcut_service_id")):
@@ -180,7 +188,8 @@ class Config:
                     raise ValueError("Укажите обе команды управления VPN")
             return cls(path.resolve().parent, ZoneInfo(raw["timezone"]), pattern,
                        groups, schedule, vpn_control=vpn, training_duration_minutes=duration,
-                       reminder_delay_minutes=reminder_delay, **numbers)
+                       reminder_delay_minutes=reminder_delay, registry_backend=backend,
+                       registry_dataset=dataset, **numbers)
         except (OSError, ValueError, KeyError, TypeError, re.error, SportError) as exc:
             raise SportError("Ошибка в config.json: " + str(exc)) from None
 
@@ -683,6 +692,13 @@ def default_config_path() -> Path:
     return ROOT / "config.json"
 
 
+def deploy_migrations(target_root: Path):
+    for source in (ROOT / "migrations").rglob("*.py"):
+        target = target_root / "migrations" / source.relative_to(ROOT / "migrations")
+        if source.resolve() != target.resolve():
+            atomic_write(target, source.read_text(encoding="utf-8"))
+
+
 def deploy_runtime(config: Config, config_path: Path) -> Config:
     """Install a self-contained copy outside macOS protected Downloads/Desktop folders."""
     state, api_token = None, None
@@ -696,10 +712,15 @@ def deploy_runtime(config: Config, config_path: Path) -> Config:
         state = load_session(config)
     private_dir(INSTALL_ROOT)
     for name in ("sportsite.py", "api_auth.py", "vpn_control.py", "attendance_report.py", "telegram_bot.py",
-                 "violation_registry.py", "bot_notifications.py", "i18n.py", "requirements.txt"):
+                 "violation_registry.py", "registry_database.py", "registry_admin.py",
+                 "bot_notifications.py", "i18n.py", "requirements.txt"):
         source, target = ROOT / name, INSTALL_ROOT / name
         if source.resolve() != target.resolve():
             atomic_write(target, source.read_text(encoding="utf-8"))
+    deploy_migrations(INSTALL_ROOT)
+    if config.registry_backend == "postgresql" and (config.root / ".state/database.json").exists():
+        if config.root.resolve() != INSTALL_ROOT.resolve():
+            atomic_write(INSTALL_ROOT / ".state/database.json", (config.root / ".state/database.json").read_text())
     write_json(INSTALL_ROOT / "config.json", json.loads(config_path.read_text(encoding="utf-8")))
     deployed = Config.load(INSTALL_ROOT / "config.json")
     if api_token:
@@ -809,6 +830,7 @@ def main() -> int:
     report = sub.add_parser("report", help="сравнить плановый снимок с выставленными часами")
     report.add_argument("--date", type=date.fromisoformat, help="дата YYYY-MM-DD; по умолчанию последнее начавшееся занятие")
     report.add_argument("--json", action="store_true", help="вывести результат для Telegram-бота")
+    report.add_argument("--actor", default="cli:report", help=argparse.SUPPRESS)
     daemon = sub.add_parser("run", help="ожидать плановых выгрузок")
     daemon.add_argument("--once", action="store_true", help="проверить только текущие задания и завершиться")
     args = parser.parse_args()
@@ -849,7 +871,7 @@ def main() -> int:
             from attendance_report import build_report, save_report, text_report
             try:
                 result = build_report(config, args.date)
-                destination = save_report(config, result)
+                destination = save_report(config, result, actor=args.actor)
                 if args.json:
                     print(json.dumps({"ok": True, "report": result}, ensure_ascii=False))
                 else:
