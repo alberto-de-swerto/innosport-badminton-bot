@@ -117,9 +117,17 @@ The example uses `Europe/Moscow` and a 60-minute lead time. All entries are conf
 | `/violations` | Show possible late cancellations, counters, dates, −1 and removal buttons |
 | `/undo` | Undo the latest counter decrease or full removal |
 | `/status` | Show recent snapshot jobs and the next scheduled capture |
+| `/language` | Choose Russian or English for bot messages |
 | `/help` | Show usage instructions |
 
 Save attendance hours on the sports website before calling `/check`. Automatic roster notifications require no command.
+
+Use `/language` and tap **Русский** or **English**, or send `/language ru` or
+`/language en` directly. The choice survives restarts and applies to command
+descriptions, reports, register controls, reminders, and problem alerts. Russian
+is the default for existing installations. Participant names stay as supplied by
+the website. Saved reports and CLI output remain in Russian; changing the bot's
+language does not change counters or resend old notifications.
 
 After a completed session, `/check` updates a private local register of people who
 were in the scheduled snapshot but disappeared without receiving hours. Open
@@ -212,6 +220,7 @@ telegram_bot.py           Private bot, commands, and roster notifications
 attendance_report.py      Baseline validation and attendance comparison
 violation_registry.py     Local late cancellation counts and durable dismissals
 bot_notifications.py      Post-practice reminders and export problem alerts
+i18n.py                   Russian/English bot messages and language helpers
 vpn_control.py            Optional macOS VPN pause and recovery
 api_auth.py               Optional personal InNoHassle token support
 config.example.json       Shareable configuration template

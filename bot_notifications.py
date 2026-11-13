@@ -7,6 +7,7 @@ import json
 from attendance_report import load_baseline
 from sportsite import SportError, parse_datetime, private_dir, write_json
 from violation_registry import report_session
+from i18n import language_of, tr
 
 
 class NotificationError(SportError):
@@ -75,6 +76,7 @@ class ServiceNotifications:
         return False
 
     def tick(self):
+        _ = lambda text: tr(text, language_of(self.settings))
         private_dir(self.state_path.parent)
         with (self.state_path.parent / "telegram-service-notifications.lock").open("a") as lock:
             try:
@@ -108,7 +110,7 @@ class ServiceNotifications:
                         del state["delivered"]["journal:jobs"]
                         write_json(self.state_path, state)
                 except (OSError, ValueError, TypeError):
-                    deliver("journal:jobs", "⚠️ Не удалось прочитать журнал выгрузок. Проверь работу программы на Mac.")
+                    deliver("journal:jobs", _("⚠️ Не удалось прочитать журнал выгрузок. Проверь работу программы на Mac."))
                     jobs = {}
 
             health_path = self.config.root / ".state" / "worker-health.json"
@@ -121,7 +123,7 @@ class ServiceNotifications:
                     if health["status"] == "error":
                         kind = health.get("kind")
                         kind = kind if isinstance(kind, str) and kind in ERROR_TEXT else "export"
-                        deliver("worker:" + kind, "⚠️ Фоновый сборщик не прошёл проверку\n" + ERROR_TEXT[kind])
+                        deliver("worker:" + kind, _("⚠️ Фоновый сборщик не прошёл проверку\n") + _(ERROR_TEXT[kind]))
                     else:
                         previous = [key for key in state["delivered"] if key.startswith("worker:")]
                         if previous:
@@ -129,7 +131,7 @@ class ServiceNotifications:
                                 del state["delivered"][key]
                             write_json(self.state_path, state)
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
-                    deliver("health-journal", "⚠️ Не удалось проверить состояние фонового сборщика. Проверь программу на Mac.")
+                    deliver("health-journal", _("⚠️ Не удалось проверить состояние фонового сборщика. Проверь программу на Mac."))
 
             for offset in (-1, 0):
                 for start in self.config.starts(now.date() + timedelta(days=offset)):
@@ -152,19 +154,19 @@ class ServiceNotifications:
                             kind = job.get("error_kind")
                             kind = kind if isinstance(kind, str) and kind in ERROR_TEXT else "export"
                             deliver("job:%s:%s" % (key, kind),
-                                    "⚠️ Ошибка выгрузки · %s МСК\n%s\nПрограмма повторит попытку в допустимом окне."
-                                    % (start.strftime("%d.%m.%Y %H:%M"), ERROR_TEXT[kind]))
+                                    _("⚠️ Ошибка выгрузки · %s МСК\n%s\nПрограмма повторит попытку в допустимом окне.")
+                                    % (start.strftime("%d.%m.%Y %H:%M"), _(ERROR_TEXT[kind])))
                         if status == "saved" and not valid_snapshot:
-                            deliver("invalid:" + key, "⚠️ Сохранённый снимок · %s МСК не прошёл проверку. "
-                                    "Не используй его для выводов об отменах; проверь локальные файлы программы."
+                            deliver("invalid:" + key, _("⚠️ Сохранённый снимок · %s МСК не прошёл проверку. "
+                                    "Не используй его для выводов об отменах; проверь локальные файлы программы.")
                                     % start.strftime("%d.%m.%Y %H:%M"))
                         deadline = due + timedelta(seconds=self.config.max_lateness_seconds + 60)
                         if status == "missed" or (status != "saved" and now > deadline):
                             if not valid_snapshot:
                                 deliver("missed:" + key,
-                                        "🚨 Снимок за час пропущен · %s МСК\n"
+                                        _("🚨 Снимок за час пропущен · %s МСК\n"
                                         "Достоверного списка за час до начала нет. Проверь, что Mac включён, не спит, "
-                                        "а программа имеет доступ к сайту. Восстановить такой снимок задним числом нельзя."
+                                        "а программа имеет доступ к сайту. Восстановить такой снимок задним числом нельзя.")
                                         % start.strftime("%d.%m.%Y %H:%M"))
 
                     end = self.end_at(start)
@@ -178,7 +180,7 @@ class ServiceNotifications:
                         checkpoint(reminder_key, "expired")
                     else:
                         deliver(reminder_key,
-                                "🏸 Beginners · занятие %s МСК завершилось\n\n"
-                                "Сохрани посещаемость и часы на спортсайте, затем отправь:\n/check %s"
+                                _("🏸 Beginners · занятие %s МСК завершилось\n\n"
+                                "Сохрани посещаемость и часы на спортсайте, затем отправь:\n/check %s")
                                 % (start.strftime("%d.%m.%Y %H:%M"), start.date().isoformat()))
             return sent

@@ -35,7 +35,7 @@ class BotCommandTests(TemporaryProject):
         for text, expected in (("/check", None), ("/check 2026-11-07", date(2026, 11, 7)),
                                ("/check@fictional_badminton_bot", None)):
             api, reporter = self.handle(update(text=text))
-            reporter.assert_called_once_with(self.config, expected)
+            reporter.assert_called_once_with(self.config, expected, language="ru")
             self.assertEqual(api.send.call_args_list[-1].args, (77, "Вымышленный отчёт"))
 
     def test_other_users_groups_spoofed_sender_and_other_bot_mentions_are_silent(self):

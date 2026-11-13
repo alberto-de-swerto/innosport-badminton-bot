@@ -47,8 +47,16 @@ so messaging outages do not delay roster collection.
 Only the paired private chat can invoke commands. Update offsets are persisted.
 Old commands request resubmission rather than silently comparing the wrong day.
 
+`i18n.py` renders Russian or English system messages without translating names
+or changing stored sports data. `/language` persists an optional preference in
+the existing private Telegram profile and updates the shared worker settings
+only after an atomic write succeeds. Command names and callback IDs stay stable.
+Language selection uses the same owner and private-chat checks as other actions.
+
 Roster notifications use the saved snapshot, never a later website read. Their
 delivery journal records a snapshot digest and progress through message parts.
+It also freezes the language of each delivery, so switching languages cannot
+change chunk boundaries halfway through a retry. Legacy entries default to Russian.
 Retries resume from the first unconfirmed part. A lost acknowledgement after
 server acceptance can still result in a duplicate; delivery is not exactly once.
 

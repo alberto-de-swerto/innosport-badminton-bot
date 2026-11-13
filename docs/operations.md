@@ -79,6 +79,11 @@ were first enabled; historical snapshots are not broadcast on installation.
 
 ## Restart or update
 
+Send `/language` in the paired private chat to choose Russian or English.
+The preference is stored with the existing private Telegram settings in
+`.state/telegram.json`. Preserve this file during upgrades; it also contains the
+bot token, so do not share or commit it. Existing profiles default to Russian.
+
 In Telegram, send `/violations` to view the late cancellation register and use
 the **−1** buttons to reduce counters one case at a time, or 🗑 to clear a person's
 current cases. People disappear automatically at zero. The list is updated by final

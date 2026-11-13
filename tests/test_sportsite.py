@@ -149,6 +149,7 @@ class ScheduleTests(TemporaryProject):
         self.assertTrue((destination / "sportsite.py").is_file())
         self.assertTrue((destination / "violation_registry.py").is_file())
         self.assertTrue((destination / "bot_notifications.py").is_file())
+        self.assertTrue((destination / "i18n.py").is_file())
         self.assertEqual(json.loads(deployed.auth_path.read_text()),
                          json.loads(self.config.auth_path.read_text()))
         self.assertEqual(deployed.auth_path.stat().st_mode & 0o777, 0o600)
@@ -428,7 +429,7 @@ class APITests(TemporaryProject):
         update = {"update_id": 1, "message": {"chat": {"id": 77, "type": "private"},
                   "from": {"id": 77, "is_bot": False}, "date": 100, "text": "/check 2026-11-05"}}
         telegram_bot.handle_update(self.config, settings, api, update, now=100,
-                                  reporter=lambda config, day: attendance_report.text_report(report))
+                                  reporter=lambda config, day, language="ru": attendance_report.text_report(report, language))
         sent = api.send.call_args.args[1]
         self.assertIn("Вымышленный Игрок", sent)
         self.assertIn("2 ч", sent)

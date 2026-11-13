@@ -24,6 +24,8 @@ from sportsite import (Config, INSTALL_ROOT, ROOT, SportError, atomic_write,
                        parse_datetime, private_dir, write_json)
 from violation_registry import ViolationRegistry
 from bot_notifications import ServiceNotifications
+from i18n import (HELP_RU, LANGUAGES, error_text, help_text, language_of,
+                  localize_notice, tr)
 
 LOG = logging.getLogger("sportsite")
 BOT_LABEL = "university.innopolis.badminton-telegram"
@@ -33,18 +35,14 @@ BOT_COMMANDS = [
     {"command": "violations", "description": "Поздние отмены и удаление из журнала"},
     {"command": "undo", "description": "Отменить последнее списание или удаление"},
     {"command": "status", "description": "Снимки и ближайшая выгрузка"},
+    {"command": "language", "description": "Язык сообщений"},
     {"command": "help", "description": "Как пользоваться ботом"},
 ]
-HELP = ("🏸 Бадминтон · Beginners\n\n"
-        "/check — сравнить последнее начавшееся занятие\n"
-        "/check YYYY-MM-DD — сравнить занятие за указанную дату\n"
-        "/violations — счётчики поздних отмен, −1 и удаление\n"
-        "/undo — отменить последнее списание или удаление\n"
-        "/status — состояние снимков и ближайшая выгрузка\n"
-        "/help — эта справка\n\n"
-        "После успешной плановой выгрузки автоматически приходит список записавшихся.\n\n"
-        "Перед /check сохрани посещаемость и часы на спортсайте. "
-        "Команда только читает данные; часы и записи на сайте не меняет.")
+HELP = HELP_RU
+
+
+def bot_commands(language="ru"):
+    return [dict(item, description=tr(item["description"], language)) for item in BOT_COMMANDS]
 
 
 class TelegramError(SportError):
@@ -139,6 +137,7 @@ def load_settings(config):
         if (raw["schema_version"] != 1 or not TOKEN_PATTERN.fullmatch(raw["token"])
                 or any(type(raw[key]) is not int or raw[key] <= 0 for key in ("chat_id", "user_id", "bot_id"))
                 or raw["chat_id"] != raw["user_id"]
+                or raw.get("language", "ru") not in LANGUAGES
                 or not re.fullmatch(r"[A-Za-z0-9_]{5,64}", raw["username"])):
             raise ValueError()
         return raw
@@ -148,18 +147,19 @@ def load_settings(config):
         raise TelegramError("Локальные настройки Telegram повреждены. Повтори telegram-setup.") from None
 
 
-def snapshot_notification(snapshot, config):
+def snapshot_notification(snapshot, config, language="ru"):
+    _ = lambda text: tr(text, language)
     start = parse_datetime(snapshot["training_start"]).astimezone(config.timezone)
     captured = parse_datetime(snapshot["captured_at"]).astimezone(config.timezone)
-    lines = ["✅ Список за час до тренировки успешно сохранён",
-             "🏸 Beginners · %s МСК" % start.strftime("%d.%m.%Y %H:%M"),
-             "Выгрузка: %s МСК" % captured.strftime("%d.%m %H:%M:%S"),
-             "Планируют прийти: %s" % snapshot["participant_count"], ""]
+    lines = [_("✅ Список за час до тренировки успешно сохранён"),
+             _("🏸 Beginners · %s МСК") % start.strftime("%d.%m.%Y %H:%M"),
+             _("Выгрузка: %s МСК") % captured.strftime("%d.%m %H:%M:%S"),
+             _("Планируют прийти: %s") % snapshot["participant_count"], ""]
     lines.extend("%s. %s" % (index, display_name(person))
                  for index, person in enumerate(snapshot["participants"], 1))
     if not snapshot["participants"]:
-        lines.append("Пока никто не записан.")
-    lines.extend(["", "После занятия сохрани часы на сайте и отправь /check."])
+        lines.append(_("Пока никто не записан."))
+    lines.extend(["", _("После занятия сохрани часы на сайте и отправь /check.")])
     return "\n".join(lines)
 
 
@@ -184,6 +184,7 @@ class SnapshotNotifications:
             for entry in state["deliveries"].values():
                 if (type(entry["parts_sent"]) is not int or type(entry["part_count"]) is not int
                         or not 0 <= entry["parts_sent"] <= entry["part_count"] or entry["part_count"] < 1
+                        or entry.get("language", "ru") not in LANGUAGES
                         or not re.fullmatch(r"[0-9a-f]{64}", entry["snapshot_sha256"])):
                     raise ValueError()
             return state
@@ -221,11 +222,14 @@ class SnapshotNotifications:
                 except (OSError, ValueError, TypeError, KeyError, AttributeError, SportError):
                     LOG.warning("Telegram: уведомление пропущено — плановый снимок не прошёл проверку.")
                     continue
-                chunks = message_chunks(snapshot_notification(snapshot, self.config))
-                digest = hashlib.sha256(path.read_bytes()).hexdigest()
                 entry = state["deliveries"].get(key)
+                # Freeze a delivery's language so partially sent old notifications
+                # retain their chunk boundaries when the owner changes language.
+                language = entry.get("language", "ru") if entry is not None else language_of(self.settings)
+                chunks = message_chunks(snapshot_notification(snapshot, self.config, language))
+                digest = hashlib.sha256(path.read_bytes()).hexdigest()
                 if entry is None:
-                    entry = {"snapshot_sha256": digest, "parts_sent": 0, "part_count": len(chunks)}
+                    entry = {"snapshot_sha256": digest, "parts_sent": 0, "part_count": len(chunks), "language": language}
                     state["deliveries"][key] = entry
                     write_json(self.state_path, state)
                 if entry["snapshot_sha256"] != digest or entry["part_count"] != len(chunks):
@@ -313,7 +317,7 @@ def setup(config):
     print("Готово. Бот работает в фоне и запускается при входе в macOS. Mac должен быть включён и не спать.")
 
 
-def run_report(config, requested_date=None):
+def run_report(config, requested_date=None, language="ru"):
     args = [sys.executable, str(ROOT / "sportsite.py"), "--config", str(config.root / "config.json"),
             "report", "--json"]
     if requested_date:
@@ -341,81 +345,111 @@ def run_report(config, requested_date=None):
             raise TelegramError(str(payload["error"]))
         if process.returncode or payload.get("ok") is not True or not isinstance(payload["report"], dict):
             raise ValueError()
-        return text_report(payload["report"]) + "\n\n📒 Журнал поздних отмен и удаление записей: /violations"
+        return text_report(payload["report"], language) + "\n\n" + tr("📒 Журнал поздних отмен и удаление записей: /violations", language)
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise TelegramError("Сравнение не завершилось. Проверь сессию спортсайта через login.command и повтори /check.") from None
 
 
-def status_text(config):
+def status_text(config, language="ru"):
+    _ = lambda text: tr(text, language)
     now = config.now()
     due = [config.due_at(start) for start in config.upcoming(now, 8) if config.due_at(start) > now]
-    lines = ["🏸 Beginners · состояние", "Бот принимает команды."]
+    lines = [_("🏸 Beginners · состояние"), _("Бот принимает команды.")]
     if due:
-        lines.append("Ближайшая выгрузка: %s МСК." % min(due).strftime("%d.%m.%Y %H:%M"))
+        lines.append(_("Ближайшая выгрузка: %s МСК.") % min(due).strftime("%d.%m.%Y %H:%M"))
     try:
         jobs_path = config.root / ".state" / "jobs.json"
         jobs = json.loads(jobs_path.read_text(encoding="utf-8")) if jobs_path.exists() else {}
         for key in sorted(jobs, reverse=True)[:3]:
             status = jobs[key].get("status", "неизвестно")
             status = {"saved": "✅ снимок сохранён", "missed": "❌ снимок пропущен", "retry": "⏳ повторяем выгрузку"}.get(status, status)
-            lines.append("%s: %s" % (key.replace("_", " "), status))
+            lines.append("%s: %s" % (key.replace("_", " "), _(status)))
     except (OSError, ValueError, TypeError, AttributeError):
-        lines.append("⚠️ Не удалось прочитать журнал снимков.")
-    lines.append("Mac должен быть включён и не спать. Сессию сайта эта команда не проверяет.")
+        lines.append(_("⚠️ Не удалось прочитать журнал снимков."))
+    lines.append(_("Mac должен быть включён и не спать. Сессию сайта эта команда не проверяет."))
     return "\n".join(lines)
 
 
-def violations_page(config, rows, page=0, notice=None, undo_id=None):
+def violations_page(config, rows, page=0, notice=None, undo_id=None, language="ru"):
+    _ = lambda text: tr(text, language)
     page_size = 5
     pages = max(1, (len(rows) + page_size - 1) // page_size)
     page = max(0, min(page, pages - 1))
-    lines = ["📒 Beginners · поздние отмены", ""]
+    lines = [_("📒 Beginners · поздние отмены"), ""]
     if notice:
-        lines.extend([notice, ""])
-    lines.extend(["Участников: %s · случаев: %s" % (len(rows), sum(p["count"] for p in rows)),
-                  "Страница %s/%s" % (page + 1, pages)])
+        lines.extend([localize_notice(notice, language), ""])
+    lines.extend([_("Участников: %s · случаев: %s") % (len(rows), sum(p["count"] for p in rows)),
+                  _("Страница %s/%s") % (page + 1, pages)])
     keyboard = []
     for index, person in enumerate(rows[page * page_size:(page + 1) * page_size], page * page_size + 1):
         name = display_name(person)[:120]
         dates = [parse_datetime(item["training_start"]).astimezone(config.timezone).strftime("%d.%m.%Y")
                  + ("*" if item.get("source") == "confirmed_import" else "")
                  for item in person["incidents"][:4]]
-        suffix = " · ещё %s" % (person["count"] - 4) if person["count"] > 4 else ""
+        suffix = _(" · ещё %s") % (person["count"] - 4) if person["count"] > 4 else ""
         lines.extend(["", "%s. %s" % (index, name),
-                      "Счётчик: %s · %s%s" % (person["count"], ", ".join(dates), suffix)])
+                      _("Счётчик: %s · %s%s") % (person["count"], ", ".join(dates), suffix)])
         keyboard.append([{"text": "−1 · " + name[:32],
                           "callback_data": "vr:dec:%s:%s:%s" % (person["student_id"], person["revision"], page)},
-                         {"text": "🗑 Удалить все",
+                         {"text": _("🗑 Удалить все"),
                           "callback_data": "vr:del:%s:%s:%s" % (person["student_id"], person["revision"], page)}])
     if not rows:
-        lines.extend(["", "Список пуст. Записи добавляются после /check по завершённым занятиям."])
+        lines.extend(["", _("Список пуст. Записи добавляются после /check по завершённым занятиям.")])
     navigation = []
     if page:
-        navigation.append({"text": "← Назад", "callback_data": "vr:page:%s" % (page - 1)})
+        navigation.append({"text": _("← Назад"), "callback_data": "vr:page:%s" % (page - 1)})
     if page + 1 < pages:
-        navigation.append({"text": "Далее →", "callback_data": "vr:page:%s" % (page + 1)})
+        navigation.append({"text": _("Далее →"), "callback_data": "vr:page:%s" % (page + 1)})
     if navigation:
         keyboard.append(navigation)
     if undo_id:
-        keyboard.append([{"text": "↩️ Отменить последнее действие", "callback_data": "vr:undo:" + undo_id}])
-    lines.extend(["", "Это возможные поздние отмены: были в снимке, затем исчезли без часов. "
-                  "Кто отменил запись, сайт не сообщает.",
-                  "«−1» списывает самый ранний случай. При 0 участник исчезает из списка. "
-                  "«🗑 Удалить все» обнуляет счётчик. Повторный /check не вернёт списанное; новые отмены учитываются.",
-                  "* — случай со скриншотов, подтверждённый вручную. "
-                  "Остальные тесты и предварительные проверки не учитываются."])
+        keyboard.append([{"text": _("↩️ Отменить последнее действие"), "callback_data": "vr:undo:" + undo_id}])
+    lines.extend(["", _("Это возможные поздние отмены: были в снимке, затем исчезли без часов. "
+                  "Кто отменил запись, сайт не сообщает."),
+                  _("«−1» списывает самый ранний случай. При 0 участник исчезает из списка. "
+                  "«🗑 Удалить все» обнуляет счётчик. Повторный /check не вернёт списанное; новые отмены учитываются."),
+                  _("* — случай со скриншотов, подтверждённый вручную. "
+                  "Остальные тесты и предварительные проверки не учитываются.")])
     return "\n".join(lines), {"inline_keyboard": keyboard}
 
 
 def show_violations(config, settings, api, page=0, message=None, notice=None):
     registry = ViolationRegistry(config)
     registry.sync_history()
-    text, markup = violations_page(config, registry.rows(), page, notice, undo_id=registry.latest_undo())
+    text, markup = violations_page(config, registry.rows(), page, notice, undo_id=registry.latest_undo(), language=language_of(settings))
     if message is None:
         api.send(settings["chat_id"], text, reply_markup=markup)
     elif message.get("text") != text or message.get("reply_markup") != markup:
         api.call("editMessageText", {"chat_id": settings["chat_id"], "message_id": message["message_id"],
                                      "text": text, "reply_markup": markup})
+
+
+def show_language(settings, api, notice=None):
+    current = language_of(settings)
+    keyboard = [[{"text": ("✅ " if code == current else "") + label,
+                  "callback_data": "language:" + code}
+                 for code, label in (("ru", "Русский"), ("en", "English"))]]
+    text = "Выбери язык / Choose a language"
+    if notice:
+        text = notice + "\n\n" + text
+    api.send(settings["chat_id"], text, reply_markup={"inline_keyboard": keyboard})
+
+
+def change_language(config, settings, api, language):
+    if language not in LANGUAGES:
+        raise TelegramError("Формат: /language, /language ru или /language en.")
+    updated = dict(settings, language=language)
+    try:
+        write_json(settings_path(config), updated)
+    except OSError:
+        raise TelegramError("Не удалось сохранить язык. Попробуй ещё раз.") from None
+    # Workers share this dictionary; update it only after the preference is durable.
+    settings.update(updated)
+    try:
+        api.call("setMyCommands", {"commands": bot_commands(language)})
+    except TelegramError:
+        LOG.warning("Telegram: язык сохранён, но меню команд не обновлено.")
+    show_language(settings, api, tr("Язык переключён на русский.", language))
 
 
 def handle_callback(config, settings, api, callback):
@@ -432,11 +466,18 @@ def handle_callback(config, settings, api, callback):
                r"(?P<action>del|dec):(?P<student>[1-9][0-9]{0,18}):"
                r"(?P<revision>[0-9a-f]{16}):(?P<return_page>[0-9]{1,6}))")
     match = re.fullmatch(pattern, data) if isinstance(data, str) else None
+    language_match = re.fullmatch(r"language:(ru|en)", data) if isinstance(data, str) else None
     try:
         api.call("answerCallbackQuery", {"callback_query_id": callback["id"]})
     except TelegramError:
         # An expired callback must not stall the update queue or perform a write.
         LOG.warning("Telegram: не удалось подтвердить нажатие кнопки; действие не выполнено.")
+        return
+    if language_match:
+        try:
+            change_language(config, settings, api, language_match[1])
+        except (SportError, OSError) as exc:
+            api.send(settings["chat_id"], "⚠️ " + error_text(exc, language_of(settings)))
         return
     if match is None:
         return
@@ -453,8 +494,8 @@ def handle_callback(config, settings, api, callback):
             notice = registry.undo(expected_id=match["undo"], request_id="callback:" + callback["id"])
         show_violations(config, settings, api, int(match["page"] or match["return_page"] or 0), message=message, notice=notice)
     except (SportError, OSError) as exc:
-        detail = str(exc) if isinstance(exc, SportError) else "Не удалось сохранить журнал поздних отмен."
-        api.send(settings["chat_id"], "⚠️ " + detail)
+        detail = exc if isinstance(exc, SportError) else "Не удалось сохранить журнал поздних отмен."
+        api.send(settings["chat_id"], "⚠️ " + error_text(detail, language_of(settings)))
 
 
 def handle_update(config, settings, api, update, reporter=run_report, now=None):
@@ -469,36 +510,48 @@ def handle_update(config, settings, api, update, reporter=run_report, now=None):
                  chat.get("type") == "private", chat.get("id") == settings["chat_id"],
                  sender.get("id") == settings["user_id"])
         return
+    language = language_of(settings)
+    _ = lambda text: tr(text, language)
     text = message.get("text", "")
     if not isinstance(text, str) or not text.startswith("/"):
         LOG.info("Telegram: получено сообщение владельца без команды.")
-        api.send(settings["chat_id"], "Отправь /check для сравнения или /status для состояния выгрузок.")
+        api.send(settings["chat_id"], _("Отправь /check для сравнения или /status для состояния выгрузок."))
         return
     if type(message.get("date")) is not int or (now if now is not None else time.time()) - message["date"] > 900:
-        api.send(settings["chat_id"], "Команда пришла более 15 минут назад. Отправь её заново, чтобы проверить нужное занятие.")
+        api.send(settings["chat_id"], _("Команда пришла более 15 минут назад. Отправь её заново, чтобы проверить нужное занятие."))
         return
     parts = text.split()
-    command, _, mention = parts[0].partition("@")
+    command, separator, mention = parts[0].partition("@")
     if mention and mention.casefold() != settings["username"].casefold():
         return
     if command in ("/start", "/help"):
-        api.send(settings["chat_id"], HELP)
+        api.send(settings["chat_id"], help_text(language))
         LOG.info("Telegram: справка отправлена.")
     elif command == "/status":
-        api.send(settings["chat_id"], status_text(config))
+        api.send(settings["chat_id"], status_text(config, language))
         LOG.info("Telegram: ответ /status отправлен.")
+    elif command == "/language":
+        if len(parts) == 1:
+            show_language(settings, api)
+        elif len(parts) == 2 and parts[1].lower() in LANGUAGES:
+            try:
+                change_language(config, settings, api, parts[1].lower())
+            except (SportError, OSError) as exc:
+                api.send(settings["chat_id"], "⚠️ " + error_text(exc, language_of(settings)))
+        else:
+            api.send(settings["chat_id"], _("Формат: /language, /language ru или /language en."))
     elif command == "/violations":
         try:
             if len(parts) != 1:
-                api.send(settings["chat_id"], "Отправь /violations без параметров. Страницы переключаются кнопками.")
+                api.send(settings["chat_id"], _("Отправь /violations без параметров. Страницы переключаются кнопками."))
                 return
             show_violations(config, settings, api)
         except (SportError, OSError) as exc:
-            detail = str(exc) if isinstance(exc, SportError) else "Не удалось открыть журнал поздних отмен."
-            api.send(settings["chat_id"], "⚠️ " + detail)
+            detail = exc if isinstance(exc, SportError) else "Не удалось открыть журнал поздних отмен."
+            api.send(settings["chat_id"], "⚠️ " + error_text(detail, language))
     elif command == "/undo":
         if len(parts) != 1:
-            api.send(settings["chat_id"], "Отправь /undo без параметров — отменить последнее списание или удаление.")
+            api.send(settings["chat_id"], _("Отправь /undo без параметров — отменить последнее списание или удаление."))
             return
         try:
             registry = ViolationRegistry(config)
@@ -506,25 +559,25 @@ def handle_update(config, settings, api, update, reporter=run_report, now=None):
             answer = registry.undo(request_id="update:" + str(update["update_id"]))
             show_violations(config, settings, api, notice=answer)
         except (SportError, OSError) as exc:
-            detail = str(exc) if isinstance(exc, SportError) else "Не удалось сохранить отмену действия."
-            api.send(settings["chat_id"], "⚠️ " + detail)
+            detail = exc if isinstance(exc, SportError) else "Не удалось сохранить отмену действия."
+            api.send(settings["chat_id"], "⚠️ " + error_text(detail, language))
     elif command == "/check":
         try:
             if len(parts) > 2 or (len(parts) == 2 and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", parts[1])):
                 raise ValueError()
             requested_date = date.fromisoformat(parts[1]) if len(parts) == 2 else None
         except ValueError:
-            api.send(settings["chat_id"], "Формат: /check или /check YYYY-MM-DD, например /check 2026-11-07.")
+            api.send(settings["chat_id"], _("Формат: /check или /check YYYY-MM-DD, например /check 2026-11-07."))
             return
-        api.send(settings["chat_id"], "🔎 Сравниваю исходный список с сохранёнными на сайте часами…")
+        api.send(settings["chat_id"], _("🔎 Сравниваю исходный список с сохранёнными на сайте часами…"))
         try:
-            answer = reporter(config, requested_date)
+            answer = reporter(config, requested_date, language=language)
         except SportError as exc:
-            answer = "⚠️ " + str(exc)
+            answer = "⚠️ " + error_text(exc, language)
         api.send(settings["chat_id"], answer)
         LOG.info("Telegram: ответ /check отправлен.")
     else:
-        api.send(settings["chat_id"], HELP)
+        api.send(settings["chat_id"], help_text(language))
 
 
 def serve(config):
@@ -543,7 +596,7 @@ def serve(config):
             raise TelegramError("Повреждён журнал команд Telegram. Нужна проверка telegram-offset.json.") from None
         LOG.info("Telegram-бот включён; доступ только у привязанного владельца в личном чате.")
         try:
-            api.call("setMyCommands", {"commands": BOT_COMMANDS})
+            api.call("setMyCommands", {"commands": bot_commands(language_of(settings))})
         except TelegramError as exc:
             LOG.warning("Telegram: меню команд не обновлено: %s", exc)
         notifications = [SnapshotNotifications(config, settings, api), ServiceNotifications(config, settings, api)]
@@ -579,7 +632,7 @@ def install_listener(config):
     # Use the same protected runtime as the snapshot agent, with an independent listener.
     private_dir(INSTALL_ROOT)
     for name in ("sportsite.py", "attendance_report.py", "telegram_bot.py", "vpn_control.py", "api_auth.py",
-                 "violation_registry.py", "bot_notifications.py"):
+                 "violation_registry.py", "bot_notifications.py", "i18n.py"):
         source, target = ROOT / name, INSTALL_ROOT / name
         if source.resolve() != target.resolve():
             atomic_write(target, source.read_text(encoding="utf-8"))

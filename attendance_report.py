@@ -7,6 +7,7 @@ from typing import Optional
 
 from sportsite import (Config, DataError, SportError, connect, parse_datetime,
                        positive_id, private_dir, write_json, atomic_write)
+from i18n import tr
 
 
 def training_start(config: Config, requested_date: Optional[date], now: datetime) -> datetime:
@@ -150,27 +151,28 @@ def display_name(person: dict) -> str:
     return name if len(name) <= 240 else name[:237] + "…"
 
 
-def text_report(report: dict) -> str:
+def text_report(report: dict, language="ru") -> str:
+    _ = lambda text: tr(text, language)
     start = parse_datetime(report["training_start"])
     checked_at = parse_datetime(report["checked_at"]).astimezone(start.tzinfo)
-    lines = ["🏸 Beginners · %s МСК" % start.strftime("%d.%m.%Y %H:%M")]
+    lines = [_("🏸 Beginners · %s МСК") % start.strftime("%d.%m.%Y %H:%M")]
     imported = report.get("baseline_mode") == "user_import"
     if imported:
         reference_at = parse_datetime(report["reference_at"]).astimezone(start.tzinfo)
-        lines.extend(["🧪 Тест по списку со скриншотов пользователя.",
-                      "Исходный список на %s МСК — время со слов пользователя. "
-                      "Автоматического снимка на этот момент нет." % reference_at.strftime("%d.%m %H:%M"),
-                      "Часы проверены: %s МСК." % checked_at.strftime("%d.%m %H:%M")])
+        lines.extend([_("🧪 Тест по списку со скриншотов пользователя."),
+                      _("Исходный список на %s МСК — время со слов пользователя. "
+                        "Автоматического снимка на этот момент нет.") % reference_at.strftime("%d.%m %H:%M"),
+                      _("Часы проверены: %s МСК.") % checked_at.strftime("%d.%m %H:%M")])
     else:
         snapshot_at = parse_datetime(report["snapshot_at"]).astimezone(start.tzinfo)
-        lines.append("Снимок записи: %s · Проверка: %s" % (snapshot_at.strftime("%H:%M:%S"), checked_at.strftime("%d.%m %H:%M")))
+        lines.append(_("Снимок записи: %s · Проверка: %s") % (snapshot_at.strftime("%H:%M:%S"), checked_at.strftime("%d.%m %H:%M")))
     if report["preliminary"]:
-        lines.append("⏳ Занятие ещё идёт — это предварительное сравнение.")
+        lines.append(_("⏳ Занятие ещё идёт — это предварительное сравнение."))
     if not report["attended"]:
-        lines.append("⚠️ На сайте нет ни одной положительной отметки. Проверь, что часы сохранены.")
+        lines.append(_("⚠️ На сайте нет ни одной положительной отметки. Проверь, что часы сохранены."))
 
     def section(title, people, render=display_name):
-        lines.extend(["", "%s — %s" % (title, len(people))])
+        lines.extend(["", "%s — %s" % (_(title), len(people))])
         lines.extend("%s. %s" % (i, render(person)) for i, person in enumerate(people, 1))
         if not people:
             lines.append("—")
@@ -179,18 +181,18 @@ def text_report(report: dict) -> str:
     section("🚫 Исчезли из исходного списка, без часов" if imported else
             "🚫 Исчезли из списка после снимка, без часов", report["cancelled"])
     section("✅ Пришли, часы выставлены", report["attended"],
-            lambda p: "%s — %s ч%s" % (display_name(p), format(p["hours"], "g"),
-                                        (" · не было в исходном списке" if imported else " · не было в снимке")
+            lambda p: _("%s — %s ч%s") % (display_name(p), format(p["hours"], "g"),
+                                        (_(" · не было в исходном списке") if imported else _(" · не было в снимке"))
                                         if not p["in_snapshot"] else ""))
     section("❌ Не пришли / остались без часов", report["no_hours"])
     if report["new_no_hours"]:
         section("➕ Не было в исходном списке, без часов" if imported else
                 "➕ Появились после снимка, без часов", report["new_no_hours"])
-    lines.extend(["", "Возможная отмена = человек был в исходном списке, но исчез из текущей таблицы и не получил часы. "
-                  "Кто отменил — участник или тренер — сайт в этой таблице не сообщает.",
-                  "«Не пришли» определено по 0 часам при сохранившейся записи. "
-                  "Если человек был, но часы не сохранены, исправь их на сайте и повтори /check.",
-                  "Отмену с повторной записью и отмену у человека с выставленными часами так обнаружить нельзя."])
+    lines.extend(["", _("Возможная отмена = человек был в исходном списке, но исчез из текущей таблицы и не получил часы. "
+                  "Кто отменил — участник или тренер — сайт в этой таблице не сообщает."),
+                  _("«Не пришли» определено по 0 часам при сохранившейся записи. "
+                  "Если человек был, но часы не сохранены, исправь их на сайте и повтори /check."),
+                  _("Отмену с повторной записью и отмену у человека с выставленными часами так обнаружить нельзя.")])
     return "\n".join(lines)
 
 

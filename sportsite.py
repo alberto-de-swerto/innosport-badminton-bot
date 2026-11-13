@@ -696,7 +696,7 @@ def deploy_runtime(config: Config, config_path: Path) -> Config:
         state = load_session(config)
     private_dir(INSTALL_ROOT)
     for name in ("sportsite.py", "api_auth.py", "vpn_control.py", "attendance_report.py", "telegram_bot.py",
-                 "violation_registry.py", "bot_notifications.py", "requirements.txt"):
+                 "violation_registry.py", "bot_notifications.py", "i18n.py", "requirements.txt"):
         source, target = ROOT / name, INSTALL_ROOT / name
         if source.resolve() != target.resolve():
             atomic_write(target, source.read_text(encoding="utf-8"))
