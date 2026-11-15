@@ -7,7 +7,7 @@ LANGUAGES = ("ru", "en")
 HELP_RU = ("🏸 Бадминтон · Beginners\n\n"
            "/check — сравнить последнее начавшееся занятие\n"
            "/check YYYY-MM-DD — сравнить занятие за указанную дату\n"
-           "/violations — счётчики поздних отмен, −1 и удаление\n"
+           "/violations — поздние отмены и неявки, −1 и удаление\n"
            "/undo — отменить последнее списание или удаление\n"
            "/status — состояние снимков и ближайшая выгрузка\n"
            "/language — русский / English\n"
@@ -19,7 +19,7 @@ HELP_RU = ("🏸 Бадминтон · Beginners\n\n"
 HELP_EN = ("🏸 Badminton · Beginners\n\n"
            "/check — compare the latest session that has started\n"
            "/check YYYY-MM-DD — compare a session on a specific date\n"
-           "/violations — late cancellation counters, −1 and removal\n"
+           "/violations — late cancellations and no-shows, −1 and removal\n"
            "/undo — undo the latest counter decrease or removal\n"
            "/status — snapshots and the next scheduled export\n"
            "/language — English / русский\n"
@@ -30,6 +30,12 @@ HELP_EN = ("🏸 Badminton · Beginners\n\n"
            "The command only reads data; it does not change hours or registrations on the website.")
 
 EN = {
+    "Нарушения: поздние отмены и неявки": "Violations: late cancellations and no-shows",
+    "📒 Beginners · нарушения": "📒 Beginners · violations",
+    "📒 Журнал нарушений и управление счётчиками: /violations": "📒 Violation register and counter controls: /violations",
+    "неявка": "no-show", "отмена": "cancellation",
+    "Учитываются поздние отмены и неявки после итогового /check. Неявка — участник из снимка с 0 часов. Если часы не сохранены, исправь их на сайте и повтори /check.": "Late cancellations and no-shows count after a final /check. A no-show is a person from the snapshot with zero credited hours. If the hours were not saved, correct them on the website and repeat /check.",
+    "«−1» списывает самый ранний случай. При 0 участник исчезает из списка. «🗑 Удалить все» обнуляет счётчик. Повторный /check не вернёт списанное; новые нарушения учитываются.": "−1 forgives the oldest case. At 0 the participant disappears. Remove all resets the counter. Repeating /check will not restore forgiven cases; new violations still count.",
     "История изменений счётчиков": "Counter change history",
     "История действий доступна после переноса журнала в PostgreSQL.": "Action history is available after migrating the register to PostgreSQL.",
     "🕒 Последние изменения счётчиков": "🕒 Recent counter changes",
@@ -152,8 +158,8 @@ def help_text(language="ru"):
 
 
 NOTICE_PATTERNS = [
-    (r"Удалено из журнала: (\d+)\. Новые отмены будут учитываться\.",
-     lambda m: "Cases removed: %s. New cancellations will still count." % m[1]),
+    (r"Удалено из журнала: (\d+)\. Новые (?:отмены|нарушения) будут учитываться\.",
+     lambda m: "Cases removed: %s. New violations will still count." % m[1]),
     (r"Счётчик: (\d+) → (\d+)\. Списан самый ранний случай\.",
      lambda m: "Counter: %s → %s. The oldest case was forgiven." % (m[1], m[2])),
     (r"↩️ Последнее действие отменено\. Восстановлено случаев: (\d+)\.(?: Уже исправлены на сайте и не восстановлены: (\d+)\.)?",

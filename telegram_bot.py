@@ -32,7 +32,7 @@ BOT_LABEL = "university.innopolis.badminton-telegram"
 TOKEN_PATTERN = re.compile(r"[0-9]{5,20}:[A-Za-z0-9_-]{20,200}\Z")
 BOT_COMMANDS = [
     {"command": "check", "description": "Сравнить снимок записи и посещаемость"},
-    {"command": "violations", "description": "Поздние отмены и удаление из журнала"},
+    {"command": "violations", "description": "Нарушения: поздние отмены и неявки"},
     {"command": "undo", "description": "Отменить последнее списание или удаление"},
     {"command": "status", "description": "Снимки и ближайшая выгрузка"},
     {"command": "language", "description": "Язык сообщений"},
@@ -347,7 +347,7 @@ def run_report(config, requested_date=None, language="ru", actor="system:report"
             raise TelegramError(str(payload["error"]))
         if process.returncode or payload.get("ok") is not True or not isinstance(payload["report"], dict):
             raise ValueError()
-        return text_report(payload["report"], language) + "\n\n" + tr("📒 Журнал поздних отмен и удаление записей: /violations", language)
+        return text_report(payload["report"], language) + "\n\n" + tr("📒 Журнал нарушений и управление счётчиками: /violations", language)
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise TelegramError("Сравнение не завершилось. Проверь сессию спортсайта через login.command и повтори /check.") from None
 
@@ -377,7 +377,7 @@ def violations_page(config, rows, page=0, notice=None, undo_id=None, language="r
     page_size = 5
     pages = max(1, (len(rows) + page_size - 1) // page_size)
     page = max(0, min(page, pages - 1))
-    lines = [_("📒 Beginners · поздние отмены"), ""]
+    lines = [_("📒 Beginners · нарушения"), ""]
     if notice:
         lines.extend([localize_notice(notice, language), ""])
     lines.extend([_("Участников: %s · случаев: %s") % (len(rows), sum(p["count"] for p in rows)),
@@ -387,6 +387,7 @@ def violations_page(config, rows, page=0, notice=None, undo_id=None, language="r
         name = display_name(person)[:120]
         dates = [parse_datetime(item["training_start"]).astimezone(config.timezone).strftime("%d.%m.%Y")
                  + ("*" if item.get("source") == "confirmed_import" else "")
+                 + (" · " + (_("неявка") if item.get("violation_kind") == "no_show" else _("отмена")))
                  for item in person["incidents"][:4]]
         suffix = _(" · ещё %s") % (person["count"] - 4) if person["count"] > 4 else ""
         lines.extend(["", "%s. %s" % (index, name),
@@ -406,10 +407,10 @@ def violations_page(config, rows, page=0, notice=None, undo_id=None, language="r
         keyboard.append(navigation)
     if undo_id:
         keyboard.append([{"text": _("↩️ Отменить последнее действие"), "callback_data": "vr:undo:" + undo_id}])
-    lines.extend(["", _("Это возможные поздние отмены: были в снимке, затем исчезли без часов. "
-                  "Кто отменил запись, сайт не сообщает."),
+    lines.extend(["", _("Учитываются поздние отмены и неявки после итогового /check. "
+                  "Неявка — участник из снимка с 0 часов. Если часы не сохранены, исправь их на сайте и повтори /check."),
                   _("«−1» списывает самый ранний случай. При 0 участник исчезает из списка. "
-                  "«🗑 Удалить все» обнуляет счётчик. Повторный /check не вернёт списанное; новые отмены учитываются."),
+                  "«🗑 Удалить все» обнуляет счётчик. Повторный /check не вернёт списанное; новые нарушения учитываются."),
                   _("* — случай со скриншотов, подтверждённый вручную. "
                   "Остальные тесты и предварительные проверки не учитываются.")])
     return "\n".join(lines), {"inline_keyboard": keyboard}
@@ -461,6 +462,10 @@ def history_text(config, language="ru"):
         lines.append(_("Причина: %s") % _(reasons.get(event["reason"], event["reason"])))
         for change in event["changes"][:5]:
             lines.append("• %s: %s → %s" % (change["full_name"], change["before"], change["after"]))
+            details = change.get("added_cases", []) + change.get("removed_cases", [])
+            if details:
+                kinds_in_change = sorted({_("неявка") if c.get("violation_kind") == "no_show" else _("отмена") for c in details})
+                lines.append("  " + ", ".join(kinds_in_change))
         if len(event["changes"]) > 5:
             lines.append(_(" · ещё %s") % (len(event["changes"]) - 5))
         lines.append("")

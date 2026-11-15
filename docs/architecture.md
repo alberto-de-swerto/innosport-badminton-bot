@@ -86,7 +86,7 @@ labelled `user_import` with separate reference and import times. This does not
 change the original job's missed status. There is no screenshot OCR importer;
 such input must be transcribed and identities verified separately.
 
-## Late cancellation register
+## Violation register
 
 The domain operations can use the original locked JSON repository or a PostgreSQL
 repository. PostgreSQL stores normalized session/case, dismissal and undo tables,
@@ -96,6 +96,12 @@ actor-attributed audit event commit together. PostgreSQL failure never falls bac
 to the preserved JSON. See [database design and migration](postgresql.md).
 
 `violation_registry.py` consumes completed comparisons of scheduled snapshots.
+It counts both missing registrations and original registrants with zero hours,
+with explicit `late_cancellation` and `no_show` kinds. The legacy state field
+`cancelled` now holds the union of counted cases; the comparison report's own
+`cancelled` and `no_hours` categories remain separate. A per-session policy version
+allows equal-timestamp old reports to be reprocessed once when the rule expands.
+An older comparison cannot replace a newer correction just because its policy is newer.
 Cases are keyed by group, session, and student ID. The latest comparison replaces
 the session's cases, so repeated checks do not increase counts and corrected
 attendance removes outdated cases. Existing final reports are backfilled on

@@ -3,7 +3,7 @@
 The register supports PostgreSQL 15+ through SQLAlchemy Core and psycopg. Existing
 installations keep the JSON backend until an explicit, verified migration.
 Snapshots, comparison reports, cookies, bot credentials and delivery journals
-remain private local files. PostgreSQL stores the cancellation register only.
+remain private local files. PostgreSQL stores the violation register only.
 
 ## Configure and migrate
 
@@ -52,8 +52,17 @@ stop workers, and verify that export before using it as a recovery source.
 
 ## Data model and transactions
 
+Migration `0002_no_shows` adds case classifications and per-session policy versions.
+Stop old workers, export a private pre-upgrade backup, run `registry_admin.py upgrade`,
+copy the updated runtime, then restart. The original `0001_registry` application
+requires its exact schema revision and cannot be used as an application rollback
+target after this upgrade. A database backup is required to restore that old version.
+This is a maintenance upgrade; do not apply it as an automatic blue/green schema
+upgrade under an already running original-version demo. New releases on the new
+schema retain the existing blue/green rollback procedure.
+
 `registry_students` contains stable IDs; `registry_sessions` and `registry_cases`
-keep session-specific names and possible cancellations. Separate tables store
+keep session-specific names, possible cancellations and no-shows. Separate tables store
 confirmed screenshot cases, dismissal identifiers, the last 20 undo actions and
 the last 50 undo responses. Counts are derived from active cases rather than
 maintained as a second, potentially inconsistent number.

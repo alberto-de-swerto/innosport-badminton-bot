@@ -1,4 +1,4 @@
-"""Private, deduplicated register of possible late cancellations."""
+"""Private, deduplicated register of late cancellations and no-shows."""
 
 from contextlib import contextmanager
 import fcntl
@@ -13,6 +13,8 @@ from sportsite import DataError, parse_datetime, positive_id, private_dir, write
 
 
 LOG = logging.getLogger("sportsite")
+POLICY_VERSION = 2
+VIOLATION_KINDS = ("late_cancellation", "no_show")
 
 
 def session_key(session):
@@ -34,9 +36,12 @@ def validate_session(session):
     for person in session["cancelled"]:
         ident = positive_id(person["student_id"])
         if (ident in ids or not isinstance(person["full_name"], str)
-                or not person["full_name"].strip()):
+                or not person["full_name"].strip()
+                or person.get("violation_kind", "late_cancellation") not in VIOLATION_KINDS):
             raise ValueError()
         ids.add(ident)
+    if type(session.get("policy_version", 1)) is not int or session.get("policy_version", 1) not in (1, POLICY_VERSION):
+        raise ValueError()
 
 
 def report_session(report, allow_import=False):
@@ -52,12 +57,26 @@ def report_session(report, allow_import=False):
             raise ValueError()
         session = {key: report[key] for key in
                    ("training_id", "group_id", "training_start", "checked_at")}
-        session["cancelled"] = [{"student_id": p["student_id"], "full_name": p["full_name"]}
-                                for p in report["cancelled"]]
-        validate_session(session)
         registered = {positive_id(p["student_id"]) for p in report["registered"]}
-        if any(p["student_id"] not in registered for p in session["cancelled"]):
-            raise ValueError()
+        credited = {positive_id(p["student_id"]) for p in report.get("attended", [])}
+        violations = {}
+        for category, kind in (("cancelled", "late_cancellation"), ("no_hours", "no_show")):
+            rows = report[category] if category == "cancelled" else report.get(category, [])
+            if not isinstance(rows, list):
+                raise ValueError()
+            seen = set()
+            for person in rows:
+                ident = positive_id(person["student_id"])
+                if ident in seen or ident not in registered or ident in credited:
+                    raise ValueError()
+                seen.add(ident)
+                if kind == "no_show" and (type(person.get("hours")) not in (int, float) or person["hours"] != 0):
+                    raise ValueError()
+                # The incident key remains person + session, regardless of classification.
+                violations.setdefault(ident, {"student_id": ident, "full_name": person["full_name"], "violation_kind": kind})
+        session["cancelled"] = list(violations.values())  # Retain the legacy state field name.
+        session["policy_version"] = POLICY_VERSION
+        validate_session(session)
         return session
     except (ValueError, KeyError, TypeError, AttributeError, DataError):
         raise DataError("Отчёт не прошёл проверку для журнала поздних отмен.") from None
@@ -165,8 +184,10 @@ class ViolationRegistry:
     def merge(state, session):
         key = session_key(session)
         previous = state["sessions"].get(key)
-        if previous and parse_datetime(previous["checked_at"]) >= parse_datetime(session["checked_at"]):
-            return False
+        if previous:
+            old_time, new_time = parse_datetime(previous["checked_at"]), parse_datetime(session["checked_at"])
+            if old_time > new_time or (old_time == new_time and previous.get("policy_version", 1) >= session.get("policy_version", 1)):
+                return False
         # Retain current source data, including dismissed cases, so undo can respect
         # later attendance corrections without rolling the entire register back.
         state["sessions"][key] = session
@@ -230,9 +251,10 @@ class ViolationRegistry:
             if key in dismissed or key in seen:
                 return
             seen.add(key)
-            entry = people.setdefault(person["student_id"], dict(person, incidents=[]))
+            entry = people.setdefault(person["student_id"], dict(student_id=person["student_id"], full_name=person["full_name"], incidents=[]))
             entry["full_name"] = person["full_name"]
-            entry["incidents"].append({"key": key, "training_start": session["training_start"], "source": source})
+            entry["incidents"].append({"key": key, "training_start": session["training_start"], "source": source,
+                                      "violation_kind": person.get("violation_kind", "late_cancellation")})
 
         for session in sorted(state["sessions"].values(), key=lambda s: parse_datetime(s["checked_at"])):
             for person in session["cancelled"]:
@@ -278,7 +300,8 @@ class ViolationRegistry:
                     session = state["sessions"][key.rsplit(":", 1)[0]]
                     case = {field: session[field] for field in
                             ("training_id", "group_id", "training_start", "checked_at")}
-                    cases.append(dict(case, person={"student_id": student_id, "full_name": person["full_name"]},
+                    cases.append(dict(case, person={"student_id": student_id, "full_name": person["full_name"],
+                                                  "violation_kind": incident.get("violation_kind", "late_cancellation")},
                                       source="scheduled"))
             state["undo_history"].append({"id": secrets.token_hex(8),
                                           "created_at": self.config.now().isoformat(),
@@ -293,7 +316,7 @@ class ViolationRegistry:
                       {"action_id": state["undo_history"][-1]["id"], "incident_keys": sorted(keys)})
             remaining = person["count"] - len(incidents)
             if clear:
-                return "Удалено из журнала: %s. Новые отмены будут учитываться." % person["count"]
+                return "Удалено из журнала: %s. Новые нарушения будут учитываться." % person["count"]
             if not remaining:
                 return "Счётчик: 0. Участник убран из списка."
             return "Счётчик: %s → %s. Списан самый ранний случай." % (person["count"], remaining)

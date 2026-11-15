@@ -24,6 +24,7 @@ from test_sportsite import TemporaryProject, START
 from test_telegram_bot import SETTINGS, NOW, update
 from test_violation_registry import report
 import telegram_bot as bot
+from test_no_shows import no_show_report
 from violation_registry import ViolationRegistry
 from demo_app import handler_for
 
@@ -207,3 +208,40 @@ class DatabaseTests(TemporaryProject):
                 self.registry.save(state, "report", "invalid update")
         self.assertEqual(self.registry.load(), before)
         self.assertEqual(self.registry.audit(), audit)
+
+    def test_no_show_backfill_is_idempotent_and_audit_has_reason_type(self):
+        self.registry.record(report(cancelled=[]))
+        with self.database.engine.begin() as connection:
+            connection.execute(sa.text("UPDATE registry_sessions SET policy_version=1"))
+        write_json(self.root/"reports/latest/report.json", no_show_report())
+        self.registry.sync_history()
+        row = self.registry.rows()[0]
+        self.assertEqual(row["count"], 1)
+        self.assertEqual(row["incidents"][0]["violation_kind"], "no_show")
+        audit = self.registry.audit()
+        self.assertEqual(audit[0]["changes"][0]["added_cases"][0]["violation_kind"], "no_show")
+        self.registry.sync_history()
+        self.assertEqual(self.registry.audit(), audit)
+        self.registry.decrement(2, row["revision"])
+        self.registry.sync_history()
+        self.assertEqual(self.registry.rows(), [])
+        self.registry.undo(request_id="no-show-undo")
+        self.assertEqual(self.registry.rows()[0]["incidents"][0]["violation_kind"], "no_show")
+
+    def test_upgrade_from_original_schema_preserves_old_cases_and_dismissals(self):
+        from alembic import command
+        from alembic.config import Config as AlembicConfig
+        import sportsite
+        self.registry.record(report())
+        row = self.registry.rows()[0]
+        self.registry.decrement(2, row["revision"])
+        migration = AlembicConfig()
+        migration.set_main_option("script_location", str(sportsite.ROOT / "migrations"))
+        with self.database.engine.begin() as connection:
+            migration.attributes["connection"] = connection
+            command.downgrade(migration, "0001_registry")
+        self.database.upgrade()
+        self.assertEqual(self.registry.rows(), [])
+        self.assertEqual(self.registry.load()["dismissed"], ["17:101:2"])
+        self.registry.undo(request_id="after-schema-upgrade")
+        self.assertEqual(self.registry.rows()[0]["count"], 1)

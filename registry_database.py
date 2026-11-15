@@ -16,7 +16,7 @@ from sqlalchemy.pool import NullPool
 from sportsite import DataError, ROOT, parse_datetime
 
 
-REVISION = "0001_registry"
+REVISION = "0002_no_shows"
 metadata = sa.MetaData()
 meta = sa.Table("registry_meta", metadata,
     sa.Column("id", sa.Integer, primary_key=True),
@@ -34,6 +34,7 @@ sessions = sa.Table("registry_sessions", metadata,
     sa.Column("training_id", sa.BigInteger, primary_key=True),
     sa.Column("training_start", sa.DateTime(timezone=True), nullable=False),
     sa.Column("checked_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("policy_version", sa.Integer, nullable=False, server_default="1"),
     sa.CheckConstraint("group_id > 0 AND training_id > 0"),
     sa.CheckConstraint("checked_at >= training_start"))
 cases = sa.Table("registry_cases", metadata,
@@ -41,6 +42,8 @@ cases = sa.Table("registry_cases", metadata,
     sa.Column("training_id", sa.BigInteger, primary_key=True),
     sa.Column("student_id", sa.BigInteger, sa.ForeignKey("registry_students.student_id"), primary_key=True),
     sa.Column("full_name", sa.Text, nullable=False),
+    sa.Column("violation_kind", sa.String(24), nullable=False, server_default="late_cancellation"),
+    sa.CheckConstraint("violation_kind IN ('late_cancellation', 'no_show')", name="ck_registry_cases_kind"),
     sa.ForeignKeyConstraint(["group_id", "training_id"],
                             ["registry_sessions.group_id", "registry_sessions.training_id"], ondelete="CASCADE"))
 confirmed = sa.Table("registry_confirmed_cases", metadata,
@@ -48,6 +51,8 @@ confirmed = sa.Table("registry_confirmed_cases", metadata,
     sa.Column("training_id", sa.BigInteger, primary_key=True),
     sa.Column("student_id", sa.BigInteger, sa.ForeignKey("registry_students.student_id"), primary_key=True),
     sa.Column("full_name", sa.Text, nullable=False),
+    sa.Column("violation_kind", sa.String(24), nullable=False, server_default="late_cancellation"),
+    sa.CheckConstraint("violation_kind IN ('late_cancellation', 'no_show')", name="ck_registry_confirmed_kind"),
     sa.Column("training_start", sa.DateTime(timezone=True), nullable=False),
     sa.Column("checked_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("confirmed_at", sa.DateTime(timezone=True), nullable=False),
@@ -109,13 +114,20 @@ def counter_changes(before, after):
         if old_keys != new_keys:
             changes.append({"student_id": ident, "full_name": (current or previous)["full_name"],
                             "before": len(old_keys), "after": len(new_keys),
-                            "added": sorted(new_keys - old_keys), "removed": sorted(old_keys - new_keys)})
+                            "added": sorted(new_keys - old_keys), "removed": sorted(old_keys - new_keys),
+                            "added_cases": [i for i in current["incidents"] if i["key"] not in old_keys] if current else [],
+                            "removed_cases": [i for i in previous["incidents"] if i["key"] not in new_keys] if previous else []})
     return changes
 
 
 def normalized(value):
     """Canonical domain state for verifying a migration before committing it."""
     if isinstance(value, dict):
+        value = dict(value)
+        if "student_id" in value and "full_name" in value:
+            value.setdefault("violation_kind", "late_cancellation")
+        if "cancelled" in value and "group_id" in value:
+            value.setdefault("policy_version", 1)
         return {k: (parse_datetime(v).astimezone(timezone.utc).isoformat()
                     if k in ("training_start", "checked_at", "created_at", "confirmed_at")
                     else normalized(v)) for k, v in value.items()}
@@ -173,14 +185,15 @@ class RegistryDatabase:
         for row in connection.execute(sa.select(sessions)).mappings():
             key = "%s:%s" % (row["group_id"], row["training_id"])
             state["sessions"][key] = {"group_id": row["group_id"], "training_id": row["training_id"],
-                "training_start": self.iso(row["training_start"]), "checked_at": self.iso(row["checked_at"]), "cancelled": []}
+                "training_start": self.iso(row["training_start"]), "checked_at": self.iso(row["checked_at"]),
+                "policy_version": row["policy_version"], "cancelled": []}
         for row in connection.execute(sa.select(cases).order_by(cases.c.student_id)).mappings():
             state["sessions"]["%s:%s" % (row["group_id"], row["training_id"])]["cancelled"].append(
-                {"student_id": row["student_id"], "full_name": row["full_name"]})
+                {"student_id": row["student_id"], "full_name": row["full_name"], "violation_kind": row["violation_kind"]})
         for row in connection.execute(sa.select(confirmed)).mappings():
             case = {key: self.iso(row[key]) for key in ("training_start", "checked_at", "confirmed_at")}
             case.update(group_id=row["group_id"], training_id=row["training_id"], source="confirmed_import",
-                        person={"student_id": row["student_id"], "full_name": row["full_name"]})
+                        person={"student_id": row["student_id"], "full_name": row["full_name"], "violation_kind": row["violation_kind"]})
             state["confirmed_cases"]["%s:%s:%s" % (row["group_id"], row["training_id"], row["student_id"])] = case
         state["dismissed"] = sorted(connection.execute(sa.select(dismissals.c.incident_key)).scalars())
         for row in connection.execute(sa.select(undo_actions).order_by(undo_actions.c.position)).mappings():
@@ -197,14 +210,16 @@ class RegistryDatabase:
         for session in state["sessions"].values():
             identity = {k: session[k] for k in ("group_id", "training_id")}
             session_rows.append(dict(identity, training_start=parse_datetime(session["training_start"]),
-                                     checked_at=parse_datetime(session["checked_at"])))
+                                     checked_at=parse_datetime(session["checked_at"]), policy_version=session.get("policy_version", 1)))
             for person in session["cancelled"]:
-                people[person["student_id"]] = person
-                case_rows.append(dict(identity, **person))
+                people[person["student_id"]] = {k: person[k] for k in ("student_id", "full_name")}
+                case_rows.append(dict(identity, student_id=person["student_id"], full_name=person["full_name"],
+                                      violation_kind=person.get("violation_kind", "late_cancellation")))
         for case in state["confirmed_cases"].values():
-            people[case["person"]["student_id"]] = case["person"]
+            people[case["person"]["student_id"]] = {k: case["person"][k] for k in ("student_id", "full_name")}
             confirmed_rows.append(dict(group_id=case["group_id"], training_id=case["training_id"],
-                **case["person"], **{k: parse_datetime(case[k]) for k in ("training_start", "checked_at", "confirmed_at")}))
+                **dict(case["person"], violation_kind=case["person"].get("violation_kind", "late_cancellation")),
+                **{k: parse_datetime(case[k]) for k in ("training_start", "checked_at", "confirmed_at")}))
         if people:
             statement = insert(students).values(list(people.values()))
             connection.execute(statement.on_conflict_do_update(index_elements=[students.c.student_id],

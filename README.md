@@ -13,7 +13,7 @@ Built around a real coordination problem at [Innopolis University](https://sport
 - **Scheduled snapshots** of Beginners registrations, saved locally as CSV and JSON with the actual capture time.
 - **Automatic Telegram notifications** after a successful scheduled export, including every registered participant's name.
 - **Attendance comparisons** through `/check`, after the leader saves attendance hours on the website.
-- **Late cancellation register** with per-person counts, session dates, and removal buttons in Telegram.
+- **Violation register** for late cancellations and no-shows, with per-person counts, session dates, and removal buttons in Telegram.
 - **Undo for register edits**, post-practice reminders, and deduplicated export problem alerts.
 - **Interactive SSO sign-in** with a reusable local session. Passwords are entered only on the university login page.
 - **Independent background workers** for exports and Telegram, installed as macOS LaunchAgents.
@@ -116,7 +116,7 @@ The example uses `Europe/Moscow` and a 60-minute lead time. All entries are conf
 | --- | --- |
 | `/check` | Compare the most recent session that has started |
 | `/check YYYY-MM-DD` | Compare a specific session |
-| `/violations` | Show possible late cancellations, counters, dates, −1 and removal buttons |
+| `/violations` | Show late cancellations and no-shows, counters, dates, −1 and removal buttons |
 | `/undo` | Undo the latest counter decrease or full removal |
 | `/status` | Show recent snapshot jobs and the next scheduled capture |
 | `/language` | Choose Russian or English for bot messages |
@@ -133,12 +133,19 @@ the website. Saved reports and CLI output remain in Russian; changing the bot's
 language does not change counters or resend old notifications.
 
 After a completed session, `/check` updates a private local register of people who
-were in the scheduled snapshot but disappeared without receiving hours. Open
-`/violations` to see names, counts, and dates; use the arrow buttons to change pages.
+were in the scheduled snapshot and either disappeared without receiving hours
+(late cancellation) or remained registered with zero hours (no-show). Open
+`/violations` to see names, counts, dates and case types; use the arrow buttons to change pages.
 Existing saved final reports are included automatically. Preliminary comparisons
 and historical tests based on screenshots are excluded from automatic counting.
 An individual screenshot case can be explicitly confirmed by the owner; its date
 then carries a `*` marker so its source stays visible.
+
+One person counts at most once per session, even if a case changes category.
+No-show means zero saved attendance hours, so save the hours before `/check` and
+repeat it after corrections. Preliminary reports and zero-hour people added after
+the original snapshot do not count. Existing final reports are re-evaluated once
+under the no-show policy, using the latest comparison and retaining manual dismissals.
 
 Each person counts once per session. A later `/check` replaces that session's
 result, so correcting attendance removes an outdated case. Use **−1** beside a
