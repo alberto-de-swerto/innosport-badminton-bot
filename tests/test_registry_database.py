@@ -245,3 +245,22 @@ class DatabaseTests(TemporaryProject):
         self.assertEqual(self.registry.load()["dismissed"], ["17:101:2"])
         self.registry.undo(request_id="after-schema-upgrade")
         self.assertEqual(self.registry.rows()[0]["count"], 1)
+
+    def test_attendance_write_reconciles_postgres_no_show_with_telegram_actor(self):
+        from contextlib import contextmanager
+        from attendance_editor import AttendanceService
+        from test_attendance_editor import FakeSport
+        from test_sportsite import DUE, fake_connection
+        import sportsite
+        sportsite.collect(self.config,START,True,clock=lambda:DUE,connector=fake_connection)
+        self.registry.record(no_show_report())
+        api=FakeSport()
+        @contextmanager
+        def connector(_): yield api
+        with mock.patch.object(sportsite.Config,'now',lambda _:START+timedelta(hours=3,seconds=1)):
+            service=AttendanceService(self.config,connector)
+            token=service.store.issue(77,'set',date=START.date().isoformat(),person=api.rows[1],
+                                     expected=0,hours=1,training_id=101,group_id=17)
+            self.assertEqual(service.write(token,77)['reconciliation'],'updated')
+        self.assertEqual(self.registry.rows(),[])
+        self.assertEqual(self.registry.audit()[0]['actor'],'telegram:77')

@@ -12,9 +12,12 @@ HELP_RU = ("🏸 Бадминтон · Beginners\n\n"
            "/status — состояние снимков и ближайшая выгрузка\n"
            "/language — русский / English\n"
            "/history — последние изменения счётчиков\n"
+           "/attendance — выставить часы участникам\n"
+           "/find часть_email [YYYY-MM-DD] — найти студента\n"
+           "/cancel — выйти из поиска\n"
            "/help — эта справка\n\n"
            "После успешной плановой выгрузки автоматически приходит список записавшихся.\n\n"
-           "Перед /check сохрани посещаемость и часы на спортсайте. "
+           "Перед /check сохрани часы через /attendance или на спортсайте. "
            "Команда только читает данные; часы и записи на сайте не меняет.")
 HELP_EN = ("🏸 Badminton · Beginners\n\n"
            "/check — compare the latest session that has started\n"
@@ -24,12 +27,61 @@ HELP_EN = ("🏸 Badminton · Beginners\n\n"
            "/status — snapshots and the next scheduled export\n"
            "/language — English / русский\n"
            "/history — recent counter changes\n"
+           "/attendance — set attendance hours\n"
+           "/find partial_email [YYYY-MM-DD] — find a student\n"
+           "/cancel — leave student search\n"
            "/help — this help message\n\n"
            "After each successful scheduled export, the bot sends the saved roster automatically.\n\n"
-           "Save attendance hours on the sports website before /check. "
+           "Save attendance hours with /attendance or on the sports website before /check. "
            "The command only reads data; it does not change hours or registrations on the website.")
 
 EN = {
+    "Выставить часы участникам занятия": "Set attendance hours for a session",
+    "Найти участника по части имени или email": "Find a student by partial name or email",
+    "Выйти из поиска участников": "Leave student search",
+    "%s ч": "%s h",
+    "🏸 Часы · %s МСК": "🏸 Attendance hours · %s MSK",
+    "Выбери занятие для выставления часов. Доступны начавшиеся занятия за последние 72 часа.": "Choose a session. Hours can be set from its start until 72 hours later.",
+    "Сейчас нет занятий, для которых можно выставить часы.": "There are no sessions currently available for attendance editing.",
+    "Выбери участника. Затем выбери количество часов — оно сразу сохранится на спортсайте.": "Choose a participant, then choose their hours. The selected value is saved to the sports website immediately.",
+    "В таблице пока нет участников. Используй поиск по email.": "There are no participants in the table yet. Use email search.",
+    "🔎 Найти по email": "🔎 Find by email",
+    "Сейчас: %s ч": "Current hours: %s h",
+    "Выбери количество часов. Кнопка сразу сохраняет выбранное значение на сайте.": "Choose the hours. The button immediately saves that value on the website.",
+    "➕ 1 час → %s ч": "➕ 1 hour → %s h",
+    "← К участникам": "← Participants",
+    "Совпадения по имени или email:": "Matching names or emails:",
+    "Совпадений нет. Уточни часть имени или email, либо отправь /cancel.": "No matches. Refine the name or email, or send /cancel.",
+    "Напиши часть имени или email для занятия %s. Например: al.muk. /cancel — выйти из поиска.": "Type part of a name or email for the session on %s. For example: al.muk. /cancel leaves search.",
+    "Поиск отменён. Открой /attendance для работы с часами.": "Search cancelled. Open /attendance to edit attendance hours.",
+    "Формат: /attendance или /attendance YYYY-MM-DD.": "Usage: /attendance or /attendance YYYY-MM-DD.",
+    "Формат: /find часть_email [YYYY-MM-DD]. Например: /find al.muk.": "Usage: /find partial_email [YYYY-MM-DD]. For example: /find al.muk.",
+    "✅ Часы подтверждены на сайте: %s — %s ч": "✅ Hours confirmed on the website: %s — %s h",
+    "Это нажатие уже обработано; повторного начисления не было.": "This action was already processed; no hours were added again.",
+    "Список нарушений пересчитан.": "The violation register has been updated.",
+    "Итоговую сверку /check выполни после окончания занятия.": "Run the final /check after the session ends.",
+    "Часы сохранены, но сверка нарушений не завершилась. Повтори /check для этой даты.": "Hours are saved, but the violation comparison did not finish. Run /check for this date.",
+    "Часы сохранены. Для обновления списка открой /attendance заново.": "Hours are saved. Reopen /attendance to refresh the list.",
+    "Для поиска введи от 3 до 100 символов имени или email.": "Enter 3–100 characters of a name or email to search.",
+    "Журнал выставления часов повреждён. Изменения не выполнялись.": "The attendance action journal is damaged. No changes were made.",
+    "Занятие изменилось. Открой /attendance заново.": "The session has changed. Reopen /attendance.",
+    "Кнопка недоступна. Открой /attendance заново.": "This button is unavailable. Reopen /attendance.",
+    "Кнопка устарела. Открой /attendance заново.": "This button has expired. Reopen /attendance.",
+    "Не удалось обработать выставление часов. Часы проверь на сайте.": "Could not process attendance editing. Check the hours on the website.",
+    "Не удалось проверить занятие и список перед выставлением часов.": "Could not validate the session and roster before editing attendance.",
+    "Недопустимое количество часов.": "Invalid number of hours.",
+    "Нет права выставлять часы этому занятию.": "You do not have permission to set hours for this session.",
+    "Результат прошлого сохранения не подтверждён. Обнови /attendance и проверь часы; повторной отправки не было.": "The previous save could not be confirmed. Refresh /attendance and check the hours; the save was not sent again.",
+    "Сохранение не подтверждено. Проверь часы на сайте и обнови /attendance.": "The save could not be confirmed. Check the website and refresh /attendance.",
+    "Укажи дату в формате YYYY-MM-DD.": "Use the date format YYYY-MM-DD.",
+    "Участника уже нет в таблице. Найди его по email заново.": "The participant is no longer in the table. Find them by email again.",
+    "Формат поиска студентов изменился. Часы не выставлены.": "The student search format changed. No hours were set.",
+    "Часы доступны от начала занятия до 72 часов после него.": "Hours can be set from the session start until 72 hours later.",
+    "Часы уже изменились. Открой участника заново, чтобы не перезаписать чужое изменение.": "The hours have changed. Reopen the participant to avoid overwriting another edit.",
+    "Запрос занял слишком много времени. Обнови /attendance и проверь часы; автоматического повтора сохранения не будет.": "The request timed out. Refresh /attendance and check the hours; the save will not be retried automatically.",
+    "Не удалось подготовить сохранение часов. Проверь подключение к спортсайту.": "Could not prepare attendance editing. Check the sports-site connection.",
+    "Не удалось получить CSRF-код спортсайта. Повтори вход через SSO.": "Could not obtain the sports-site CSRF token. Sign in through SSO again.",
+    "Спортсайт отклонил сохранение. Проверь вход, права тренера и срок изменения часов.": "The sports website rejected the save. Check sign-in, trainer permissions and the editing window.",
     "Нарушения: поздние отмены и неявки": "Violations: late cancellations and no-shows",
     "📒 Beginners · нарушения": "📒 Beginners · violations",
     "📒 Журнал нарушений и управление счётчиками: /violations": "📒 Violation register and counter controls: /violations",

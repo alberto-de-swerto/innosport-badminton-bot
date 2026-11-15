@@ -13,7 +13,10 @@ local `config.json`, real authentication, or a Chromium download.
 
 When changing collection or reporting:
 
-- Keep sports-site operations read-only.
+- Keep exports and comparisons read-only. The owner-authorized attendance editor
+  may only POST one student's absolute hours to `/api/attendance/mark`, after
+  validating group, trainer permissions and the start-to-72-hours window. Never
+  call booking, enrollment, check-in or cancellation endpoints for another person.
 - Preserve the distinction between scheduled captures, manual captures, and explicitly imported reference lists.
 - Retain the actual collection time. Never backdate a late or missed capture.
 - Validate group, session, and participant IDs before comparing records.

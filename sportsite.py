@@ -55,6 +55,14 @@ class TooLateError(SportError):
     pass
 
 
+class AttendanceWriteUncertain(SportError):
+    """A POST may have committed; read back before deciding what happened."""
+
+
+class AttendanceWriteRejected(SportError):
+    pass
+
+
 def failure_kind(error):
     if isinstance(error, AuthError):
         return "auth"
@@ -297,6 +305,61 @@ class SportAPI:
             return raw
         except (KeyError, TypeError, ValueError):
             raise DataError("Формат расписания изменился; требуется обновить скрипт.") from None
+
+    def attendance_csrf(self):
+        """Obtain the site's normal CSRF cookie in memory; never weaken CSRF checks."""
+        if self.bearer_token:
+            return None
+        from playwright.sync_api import Error as PlaywrightError
+        try:
+            response = self.request.get(ORIGIN + "/profile/", max_redirects=0,
+                timeout=self.config.request_timeout_seconds * 1000)
+            try:
+                if response.status != 200:
+                    raise AuthError("Нужен повторный вход: python sportsite.py login")
+                state = self.request.storage_state()
+            finally:
+                response.dispose()
+        except PlaywrightError:
+            raise SportError("Не удалось подготовить сохранение часов. Проверь подключение к спортсайту.") from None
+        tokens = [c["value"] for c in state.get("cookies", []) if c.get("name") == "csrftoken"
+                  and c.get("domain", "").lstrip(".") == HOST]
+        if not tokens or not re.fullmatch(r"[A-Za-z0-9]{32,64}", tokens[-1]):
+            raise AuthError("Не удалось получить CSRF-код спортсайта. Повтори вход через SSO.")
+        return tokens[-1]
+
+    def mark_attendance(self, start, training_id, student_id, hours):
+        """The only website write allowed by this client: one student's absolute hours."""
+        positive_id(training_id)
+        positive_id(student_id)
+        if type(hours) is not int or not 0 <= hours <= 24:
+            raise DataError("Недопустимое количество часов.")
+        csrf = self.attendance_csrf()
+        # Recheck the time after fetching the CSRF cookie, immediately before POST.
+        if not start <= self.config.now() <= start + timedelta(days=3):
+            raise AttendanceWriteRejected("Часы доступны от начала занятия до 72 часов после него.")
+        headers = {"Accept": "application/json", "Origin": ORIGIN, "Referer": ORIGIN + "/profile/"}
+        if self.bearer_token:
+            headers["Authorization"] = "Bearer " + self.bearer_token
+        else:
+            headers["X-CSRFToken"] = csrf
+        from playwright.sync_api import Error as PlaywrightError
+        try:
+            response = self.request.post(ORIGIN + "/api/attendance/mark", headers=headers,
+                data={"training_id": training_id, "students_hours": [{"student_id": student_id, "hours": hours}]},
+                timeout=self.config.request_timeout_seconds * 1000, max_redirects=0)
+        except PlaywrightError:
+            raise AttendanceWriteUncertain("Ответ на сохранение часов потерян. Проверяю результат на сайте.") from None
+        try:
+            if response.status in (400, 401, 403, 404) or 300 <= response.status < 400:
+                raise AttendanceWriteRejected("Спортсайт отклонил сохранение. Проверь вход, права тренера и срок изменения часов.")
+            if response.status != 200:
+                raise AttendanceWriteUncertain("Спортсайт не подтвердил сохранение часов. Нужна проверка результата.")
+            if "application/json" not in response.headers.get("content-type", "").lower():
+                raise AttendanceWriteUncertain("Спортсайт не подтвердил сохранение часов. Нужна проверка результата.")
+            # A successful HTTP response alone does not prove the student's mark was saved.
+        finally:
+            response.dispose()
 
     def find(self, start: datetime) -> dict:
         matches = [event for event in self.calendar(start.date())
@@ -711,7 +774,7 @@ def deploy_runtime(config: Config, config_path: Path) -> Config:
     else:
         state = load_session(config)
     private_dir(INSTALL_ROOT)
-    for name in ("sportsite.py", "api_auth.py", "vpn_control.py", "attendance_report.py", "telegram_bot.py",
+    for name in ("sportsite.py", "api_auth.py", "vpn_control.py", "attendance_report.py", "attendance_editor.py", "attendance_bot.py", "telegram_bot.py",
                  "violation_registry.py", "registry_database.py", "registry_admin.py",
                  "bot_notifications.py", "i18n.py", "requirements.txt"):
         source, target = ROOT / name, INSTALL_ROOT / name

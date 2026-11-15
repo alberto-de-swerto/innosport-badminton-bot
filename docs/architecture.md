@@ -74,6 +74,24 @@ The snapshot keeps a validated calendar end when available; older files use the
 configured duration. Startup failures and typed retry causes are persisted by
 the exporter so the Telegram process can explain failures even after it exits.
 
+## Attendance editor
+
+`attendance_bot.py` presents owner-bound opaque buttons and partial email/name
+search. `attendance_editor.py` runs all website I/O in a subprocess so Playwright
+and VPN cleanup have a defined lifecycle. The only added write is
+`POST /api/attendance/mark`, with one student's absolute hours. Eligibility is
+rechecked at execution time: selected group, trainer permissions, current server
+editing flag and no more than 72 hours from the scheduled start. Search additions
+create attendance marks only, never a check-in or enrollment.
+
+An atomic private journal records the intended write before POST. Completed
+buttons return the saved result; uncertain writes are checked by GET rather than
+sent again. The worker compares fresh hours with the value displayed when the
+button was created. The upstream API has no atomic compare-and-swap, so a separate
+website client can still race between that read and POST. Read-back validates the
+saved target. After a finished session, a fresh comparison reconciles violations;
+during a session, final reconciliation waits until the session ends.
+
 ## Attendance comparison
 
 `attendance_report.py` selects the most recent started session, or an explicitly

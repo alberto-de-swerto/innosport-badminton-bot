@@ -37,6 +37,9 @@ BOT_COMMANDS = [
     {"command": "status", "description": "Снимки и ближайшая выгрузка"},
     {"command": "language", "description": "Язык сообщений"},
     {"command": "history", "description": "История изменений счётчиков"},
+    {"command": "attendance", "description": "Выставить часы участникам занятия"},
+    {"command": "find", "description": "Найти участника по части имени или email"},
+    {"command": "cancel", "description": "Выйти из поиска участников"},
     {"command": "help", "description": "Как пользоваться ботом"},
 ]
 HELP = HELP_RU
@@ -518,6 +521,10 @@ def handle_callback(config, settings, api, callback):
         except (SportError, OSError) as exc:
             api.send(settings["chat_id"], "⚠️ " + error_text(exc, language_of(settings)))
         return
+    if isinstance(data,str) and re.fullmatch(r"at:[0-9a-f]{16}",data):
+        from attendance_bot import AttendanceUI
+        AttendanceUI(config,settings,api).callback(data[3:],message)
+        return
     if match is None:
         return
     try:
@@ -553,6 +560,10 @@ def handle_update(config, settings, api, update, reporter=run_report, now=None):
     _ = lambda text: tr(text, language)
     text = message.get("text", "")
     if not isinstance(text, str) or not text.startswith("/"):
+        if isinstance(text,str) and type(message.get("date")) is int and (now if now is not None else time.time())-message["date"] <= 900:
+            from attendance_bot import AttendanceUI
+            if AttendanceUI(config,settings,api).pending_reply(text):
+                return
         LOG.info("Telegram: получено сообщение владельца без команды.")
         api.send(settings["chat_id"], _("Отправь /check для сравнения или /status для состояния выгрузок."))
         return
@@ -563,7 +574,10 @@ def handle_update(config, settings, api, update, reporter=run_report, now=None):
     command, separator, mention = parts[0].partition("@")
     if mention and mention.casefold() != settings["username"].casefold():
         return
-    if command in ("/start", "/help"):
+    if command in ("/attendance", "/find", "/cancel"):
+        from attendance_bot import AttendanceUI
+        AttendanceUI(config,settings,api).command(parts)
+    elif command in ("/start", "/help"):
         api.send(settings["chat_id"], help_text(language))
         LOG.info("Telegram: справка отправлена.")
     elif command == "/status":
@@ -675,7 +689,7 @@ def install_listener(config):
         raise TelegramError("Для постоянной работы на этой системе запусти sportsite.py telegram-run.")
     # Use the same protected runtime as the snapshot agent, with an independent listener.
     private_dir(INSTALL_ROOT)
-    for name in ("sportsite.py", "attendance_report.py", "telegram_bot.py", "vpn_control.py", "api_auth.py",
+    for name in ("sportsite.py", "attendance_report.py", "attendance_editor.py", "attendance_bot.py", "telegram_bot.py", "vpn_control.py", "api_auth.py",
                  "violation_registry.py", "registry_database.py", "registry_admin.py",
                  "bot_notifications.py", "i18n.py", "requirements.txt"):
         source, target = ROOT / name, INSTALL_ROOT / name

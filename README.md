@@ -13,6 +13,7 @@ Built around a real coordination problem at [Innopolis University](https://sport
 - **Scheduled snapshots** of Beginners registrations, saved locally as CSV and JSON with the actual capture time.
 - **Automatic Telegram notifications** after a successful scheduled export, including every registered participant's name.
 - **Attendance comparisons** through `/check`, after the leader saves attendance hours on the website.
+- **Attendance editing from Telegram** with `/attendance`, per-person hour buttons and partial email/name search. Edits are limited to the first 72 hours from a session's start and verified by reading back the saved value.
 - **Violation register** for late cancellations and no-shows, with per-person counts, session dates, and removal buttons in Telegram.
 - **Undo for register edits**, post-practice reminders, and deduplicated export problem alerts.
 - **Interactive SSO sign-in** with a reusable local session. Passwords are entered only on the university login page.
@@ -57,7 +58,11 @@ flowchart LR
     Comparison --> Bot
 ```
 
-The browser is needed for interactive SSO sign-in. Scheduled exports use Playwright's HTTP request context and the saved sports-site session. The client only reads sports data: it does not register students, cancel places, or assign hours.
+The browser is needed for interactive SSO sign-in. Scheduled exports use Playwright's
+HTTP request context and the saved sports-site session. Snapshots and comparisons
+only read sports data. Explicit owner-selected hour buttons can update attendance
+for a started session during its first 72 hours. The bot never books a place,
+checks another student in, or cancels a registration.
 
 The Telegram worker watches completed scheduled exports and sends their saved contents. Telegram outages do not block collection. Reports compare students by stable ID rather than display name.
 
@@ -121,9 +126,14 @@ The example uses `Europe/Moscow` and a 60-minute lead time. All entries are conf
 | `/status` | Show recent snapshot jobs and the next scheduled capture |
 | `/language` | Choose Russian or English for bot messages |
 | `/history` | Show the last 10 register changes, actors and count deltas (PostgreSQL) |
+| `/attendance [YYYY-MM-DD]` | Choose a started session and set a participant's attendance hours |
+| `/find partial_email [YYYY-MM-DD]` | Find up to five students for a session; then choose a person and hours |
+| `/cancel` | Leave contextual student search |
 | `/help` | Show usage instructions |
 
-Save attendance hours on the sports website before calling `/check`. Automatic roster notifications require no command.
+Save attendance hours with `/attendance` or on the sports website before calling
+`/check`. Automatic roster notifications require no command. See
+[attendance editing](docs/attendance.md) for buttons, search and save recovery.
 
 Use `/language` and tap **Русский** or **English**, or send `/language ru` or
 `/language en` directly. The choice survives restarts and applies to command
@@ -237,6 +247,8 @@ See [demo releases and deployment](docs/demo-deployment.md).
 sportsite.py              API access, SSO, exports, scheduler, and CLI
 telegram_bot.py           Private bot, commands, and roster notifications
 attendance_report.py      Baseline validation and attendance comparison
+attendance_editor.py      Time-bounded hour updates, read-back and action journal
+attendance_bot.py         Owner-only attendance buttons and student search
 violation_registry.py     Local late cancellation counts and durable dismissals
 registry_database.py      PostgreSQL tables, transactions and audit events
 registry_admin.py         Verified JSON migration and private administration
